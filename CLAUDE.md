@@ -1,0 +1,70 @@
+# Project Context — Truthfulness Profiles (Group 7)
+
+**Course:** FINM 33200 — Generative and Agentic AI for Finance, Spring 2026
+**Team:** Brendan Kehoe, Seback Oh, Tejaswini Shashidhar, Thomas Hillenbrand
+**Final submission:** 2026-05-27
+
+## Guiding principle
+
+This is a proof of concept. When in doubt on scope decisions, lean narrower.
+
+## What we're building
+
+An agentic system that produces auditable historical truthfulness profiles for public companies. Given an earnings call transcript, the system extracts forward-looking management claims; it then grades whether each claim was realized by checking the same company's subsequent SEC filings (10-Q, 10-K, 8-K).
+
+Three deliverables:
+1. A verification agent
+2. Per-firm truthfulness profiles for 4 firms
+3. A hand-labeled validation gold set
+
+## Scope (locked-in)
+
+- **Sample:** 4 firms × ~20 earnings calls each over 2020–2025 = ~80 calls
+- **Sectors:** tech, healthcare, energy, consumer (specific firms TBD)
+- **Claim categories:** Numerical guidance (graded against Compustat) + capital allocation: buybacks, dividends, capex plans, debt (graded against subsequent 10-Q balance sheet, cash flow, and 8-Ks)
+- **Verification source:** SEC EDGAR exclusively — no news/web APIs
+- **Pipeline:** transcript → typed-claim extraction → SEC-filings-based verification → graded verdict (verified / partially verified / contradicted / not yet resolvable) + cited evidence
+- **Labeling workflow (load-bearing — don't change):** the agent surfaces candidate evidence *without proposing a verdict*; human labelers read the evidence and assign verdicts independently. Letting the agent's verdict bias the labeler creates circularity in the evaluation.
+- **Fallback:** if capital allocation grading hits roadblocks, drop to numerical-guidance-only.
+
+## Key documents in this directory
+
+- `proposal.md` — submitted proposal (the formal scope)
+- `workplan.md` — 10-day execution plan with workstreams and daily milestones
+- `pitch.md` — older framing, not authoritative; use proposal/CLAUDE.md when in conflict
+
+## Workstreams
+
+- **A. Data infrastructure** — transcripts, SEC filings (EDGAR), Compustat loader, sample selection
+- **B. Claim extraction pipeline** — LLM extraction with typed schema, prompt engineering
+- **C. Verification agent** — agentic search over SEC filings
+- **D. Evaluation & writeup** — gold-set labeling, agent scoring, profile assembly, paper, defense prep
+
+Gold-set labeling is a whole-team sprint on days 6–7, not loaded onto stream D alone.
+
+## Open items
+
+1. Specific firm selection (one each from tech, healthcare, energy, consumer)
+2. WRDS / Compustat access confirmation
+3. LLM provider choice per stage
+4. Capital allocation grading rubric (partial-credit policy — e.g., "announced $1B buyback over 12mo → executed $700M in 12mo" → partial? full?)
+5. Labeling rubric finalization
+
+## Execution notes
+
+- **The labeling workflow is load-bearing.** Don't break the agent-as-research-assistant (evidence-only) pattern — letting the agent's verdict bias the labeler creates circularity in the evaluation.
+- **Day-4 pilot is the load-bearing checkpoint.** If extraction or agent scaffolding is broken on the pilot, the whole plan slips.
+
+## Course material reference
+
+The course site (https://finm-33200.github.io/) covers techniques directly relevant to pipeline implementation:
+
+- **Discussion 1** — Lopez-Lira & Tang (LLM prompting) and Chen-Kelly-Xiu (embeddings) for return-prediction setups; useful framing for the optional alpha extension.
+- **Discussion 2** — Tokenization, embeddings basics.
+- **Discussion 3** — OpenAI API, structured outputs with Pydantic — directly applicable to the claim-extraction pipeline.
+- **Discussion 4** — Classical RAG, semantic search over SEC filings, RAG benchmarking. The `02_rag_benchmark_ipynb.html` notebook and the `01_filing_search_ipynb.html` semantic-search notebook are the most directly reusable references for the verification agent's filing search.
+- **Discussion 5** — Introduction to Agents.
+- **HW3** — student-built RAG pipeline on SEC 10-Ks; the chunking, embedding, retrieval, and prompt scaffolds from this assignment are reusable.
+- **HW4** — Agentic RAG trace audit on SEC filings, using Matt Stockton's `agentic-rag-edgar-demo` repo. That repo's EDGAR tool patterns are a useful starting point for workstream C.
+
+The project's distinction from class material lives in: earnings call transcripts as input, forward-claim verification as the task, and SEC filings as delayed ground truth.
