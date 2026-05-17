@@ -4,13 +4,14 @@
 **Team:** Brendan Kehoe, Seback Oh, Tejaswini Shashidhar, Thomas Hillenbrand
 **Final submission:** 2026-05-27
 
-## Prime Directive of Project Updates
-- When a user starts a new session with the project, they should be prompted or reminded to make sure to pull the latest updates from the repository.
+## Collaboration with Claude
+- When a user starts a new session with the project, they should be reminded to make sure to pull the latest updates from the repository.
 - Using branches is encouraged for any significant changes or additions to the codebase, and users should be reminded to create a new branch for their work and to merge it back into the main branch once it's ready.
   - If they decide they are uncomfortable with branching, offer to guide them through the process. Do not force them.
-- If changes made by a user affect the overall project context or would be helpful for other collaborators to know, they should be prompted or reminded to update the `CLAUDE.md` file with a summary of the changes and their implications for the project.
+- If changes made by a user affect the overall project context or would be helpful for other collaborators to know, they should be reminded to update the `CLAUDE.md` file.
+  - Update should include a summary of the changes and their implications for the project.
 - It is fine for users to make changes to the `CLAUDE.md` file themselves or via claude.
-- When a user makes updates to the project, they should be prompted or reminded to push their changes to the repository with a clean commit message.
+- When a user makes updates to the project, they should be reminded to push their changes to the repository with a clean commit message.
 
 ## Guiding principle
 
