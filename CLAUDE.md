@@ -29,7 +29,7 @@ Three deliverables:
 ## Scope (locked-in)
 
 - **Sample:** 4 firms × ~20 earnings calls each over 2020–2025 = ~80 calls
-- **Sectors:** tech, healthcare, energy, consumer (specific firms TBD)
+- **Firms:** Tesla (auto/EV), Amazon (tech/consumer), Coca-Cola (consumer staples), Eli Lilly (healthcare/pharma)
 - **Claim categories:** Numerical guidance (graded against Compustat) + capital allocation: buybacks, dividends, capex plans, debt (graded against subsequent 10-Q balance sheet, cash flow, and 8-Ks)
 - **Verification source:** SEC EDGAR exclusively — no news/web APIs
 - **Pipeline:** transcript → typed-claim extraction → SEC-filings-based verification → graded verdict (verified / partially verified / contradicted / not yet resolvable) + cited evidence
@@ -53,11 +53,10 @@ Gold-set labeling is a whole-team sprint on days 6–7, not loaded onto stream D
 
 ## Open items
 
-1. Specific firm selection (one each from tech, healthcare, energy, consumer)
-2. WRDS / Compustat access confirmation
-3. LLM provider choice per stage
-4. Capital allocation grading rubric (partial-credit policy — e.g., "announced $1B buyback over 12mo → executed $700M in 12mo" → partial? full?)
-5. Labeling rubric finalization
+1. WRDS / Compustat access confirmation
+2. LLM provider choice per stage
+3. Capital allocation grading rubric (partial-credit policy — e.g., "announced $1B buyback over 12mo → executed $700M in 12mo" → partial? full?)
+4. Labeling rubric finalization
 
 ## Execution notes
 
