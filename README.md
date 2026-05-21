@@ -15,6 +15,16 @@ finm-33200-group7/
 ├── environment.yml            # mamba env spec (python=3.12, pip-tools)
 ├── .env.example               # template for API keys and other settings
 ├── src/
+│   ├── extractor/             # workstream B — claim extraction pipeline
+│   │   ├── __init__.py        # re-exports the public API
+│   │   ├── schema.py          # Pydantic models: Claim, ExtractedClaim, ExtractionResponse
+│   │   ├── reader.py          # loads transcript CSVs, groups turns into earnings calls
+│   │   ├── horizon.py         # resolves claim time horizons to absolute dates
+│   │   ├── prompt.py          # extraction system prompt + few-shot example
+│   │   ├── provenance.py      # matches an extracted quote back to its source turn
+│   │   ├── extract.py         # build_extractor, extract_call, extract_transcript, dedupe_claims
+│   │   ├── output.py          # writes the claims CSV
+│   │   └── run.py             # CLI: python -m extractor.run --input ... --output ...
 │   └── verifier/              # workstream C — verification agent (iteration 1: stubbed tools)
 │       ├── __init__.py        # re-exports the public API
 │       ├── schema.py          # Pydantic models: Claim, EvidenceItem, EvidenceBundle, Verdict
@@ -24,17 +34,20 @@ finm-33200-group7/
 │       ├── agent.py           # build_agent, verify, verify_from_dict
 │       └── run.py             # CLI: python -m verifier.run --claim ... --mode {evidence,verdict}
 ├── tests/
-│   ├── test_schema.py         # Pydantic schema tests (incl. the no-verdict-on-EvidenceBundle guarantee)
-│   ├── test_corpus.py         # stub corpus loader test
-│   ├── test_tools.py          # search_filings stub test
-│   └── test_smoke.py          # end-to-end live tests (marked `live`; run with `pytest -m live`)
+│   ├── test_extractor_*.py    # extractor tests: schema, reader, horizon, provenance, dedupe, smoke
+│   ├── test_schema.py         # verifier Pydantic schema tests
+│   ├── test_corpus.py         # verifier stub corpus loader test
+│   ├── test_tools.py          # verifier search_filings stub test
+│   └── test_smoke.py          # verifier end-to-end live tests (marked `live`; run with `pytest -m live`)
 ├── data/
+│   ├── Transcript/            # input earnings-call transcript CSVs (4 firms)
+│   ├── claims/                # extractor output — claims CSVs
 │   ├── stub/                  # canned fixtures (example_claim.json + canned_excerpts.json)
 │   └── traces/                # per-run agent traces (gitignored)
 └── docs/                      # design docs and other supporting material
 ```
 
-Workstreams A (data infrastructure), B (claim extraction), and D (evaluation & writeup) will add their own modules under `src/` as they come online.
+Workstreams A (data infrastructure) and D (evaluation & writeup) will add their own modules under `src/` as they come online.
 
 ## Setup
 
@@ -64,19 +77,52 @@ Once setup is complete, confirm everything is wired up:
 # Fast unit tests (no API calls)
 pytest -v
 
-# End-to-end smoke tests (require OPENAI_API_KEY in .env; ~2 OpenAI calls per test)
+# End-to-end smoke tests (require OPENAI_API_KEY in .env; live OpenAI calls)
 pytest -m live -v
 
-# Run the agent on the stub claim — see the full trace and the structured output
+# Run the verification agent on the stub claim
 python -m verifier.run --claim data/stub/example_claim.json --mode evidence
 python -m verifier.run --claim data/stub/example_claim.json --mode verdict
 ````
 
-If `pytest -v` shows 9 passed and `python -m verifier.run` produces an
+If `pytest -v` is all green and `python -m verifier.run` produces an
 `EvidenceBundle` JSON dump, the scaffold is healthy. Traces from each run
 land in `data/traces/` (gitignored).
 
-### Adding or updating dependencies
+## Claim extraction (workstream B)
+
+The `extractor` package turns earnings-call transcripts into a CSV of typed,
+forward-looking management claims for workstreams C and D to consume. For each
+earnings call it makes one OpenAI structured-output request, recovers each
+claim's source turn by matching the quote back to the transcript, resolves
+claim time horizons to absolute dates, and drops exact-duplicate claims.
+
+Every claim is classified into one of five types — `numerical_guidance`,
+`buyback`, `dividend`, `capex`, `debt` — and carries its verbatim quote, a
+paraphrase, provenance (source turn + speaker), and a resolved horizon. By
+design the schema holds no verdict or outcome field: the extractor surfaces
+claims, the verifier surfaces evidence, and human labelers assign verdicts.
+
+Run it with the CLI:
+
+```bash
+# 5-call pilot on one firm
+python -m extractor.run \
+    --input data/Transcript/Tesla_2018_2022.csv \
+    --output data/claims/pilot_claims.csv --limit 5
+
+# full run over every transcript CSV in a directory
+python -m extractor.run --input data/Transcript --output data/claims/all_claims.csv
+
+# override the model (default: openai:gpt-4o-mini)
+python -m extractor.run --input ... --output ... --model openai:gpt-5.5
+```
+
+The CLI loads `OPENAI_API_KEY` from `.env` automatically. Each run prints a
+per-call claim count and a summary (type breakdown, provenance split, horizon
+resolution) and writes one row per claim to the output CSV in `data/claims/`.
+
+## Adding or updating dependencies
 
 `pyproject.toml` is the source of truth. After editing `[project.dependencies]`:
 
