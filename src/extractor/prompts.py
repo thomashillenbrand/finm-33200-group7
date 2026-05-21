@@ -14,15 +14,21 @@ Extract ONLY two categories:
 Rules:
 - "Forward-looking" means the claim is about a FUTURE period. Past results already reported
   are NOT forward-looking.
-- source_span must be verbatim text copied from the transcript. Do not paraphrase or shorten.
-  If you cannot find the exact text, do not include the claim.
+- source_span must be verbatim text copied from the transcript, starting at the
+  forward-looking portion only. Do not include preceding past results in the same span
+  even if they appear in the same sentence. If you cannot find the exact text, skip the claim.
+- A claim MUST contain a specific number, dollar amount, or percentage. Vague directional
+  statements ("will grow", "expects improvement", "tens of billions") with no precise figure
+  are NOT extractable. If value_or_amount would be null AND the claim has no specific metric
+  value, skip it entirely.
 - horizon: next_quarter (< 3 months out), next_year (3–15 months), multi_year (> 15 months),
   unspecified (no timeframe stated).
 - confidence_language: certain ("will", "plan to", "are going to"), likely ("expect",
   "anticipate", "project"), conditional ("if X", "assuming", "subject to"), hedged ("hope",
   "target", "aim", "intend").
 - value_or_amount: the numeric value, range, or dollar figure mentioned ("$5B", "15%",
-  "$1.20 per share"). Set to null if the claim is directional only ("improve", "grow").
+  "$1.20 per share"). Set to null ONLY if the claim has a specific metric but the exact
+  magnitude is not stated (e.g. "capex will increase year-over-year").
 
 Do NOT extract:
 - Past-period results ("we delivered $X in revenue last quarter").
@@ -30,6 +36,15 @@ Do NOT extract:
 - Analyst or moderator speech — only extract management statements.
 - Market-level or macro forecasts not tied to this company's own financials.
 - Qualitative product or strategy announcements without numeric guidance.
+- Accounting or depreciation changes framed as operating income benefits — these are not
+  capital allocation decisions (buyback/dividend/capex/debt).
+- Aspirational long-range statements with no specific figure ("drive significant value
+  over the coming years").
+- Capital expenditure guidance that only says direction with no dollar amount or percentage
+  ("CapEx will increase", "we expect capex to rise") — skip unless a figure is given.
+- Product pricing, subscription fees, or sales promotions — these are NOT capital allocation.
+  Capital allocation means: buybacks, dividends, physical investment capex, or debt decisions.
+- Vague liquidity or cash management comments with no specific figure or action.
 
 --- Few-shot examples ---
 
@@ -65,6 +80,34 @@ EXAMPLE 8 (in scope — dividend):
   Span: "We intend to increase the quarterly dividend to $0.46 per share."
   type: capital_allocation, subcategory: dividend, value_or_amount: $0.46/share,
   horizon: next_quarter, confidence_language: certain
+
+EXAMPLE 9 (out of scope — vague directional, no specific number):
+  Span: "We believe we're going to drive tens of billions of dollars of revenue over the
+  next several years." → SKIP (no specific figure, aspirational only)
+
+EXAMPLE 10 (out of scope — mixed past+future, extract forward-looking part only):
+  Full sentence: "CapEx was $26.3B in Q4. And we think that run rate will be representative
+  of our 2025 investment rate."
+  WRONG span: "CapEx was $26.3B in Q4. And we think that run rate will be representative
+  of our 2025 investment rate." — do NOT include the past result
+  CORRECT span: "we think that run rate will be reasonably representative of our 2025
+  capital investment rate."
+
+EXAMPLE 11 (out of scope — accounting benefit, not capital allocation):
+  Span: "We will have an anticipated benefit to our operating income of approximately
+  $900 million in Q1 from our change in depreciation estimates." → SKIP
+  (This is an accounting/depreciation change, not a buyback/dividend/capex/debt decision)
+
+EXAMPLE 12 (out of scope — directional capex with no number):
+  Span: "We expect CapEx to increase year-over-year." → SKIP (no specific figure or range)
+
+EXAMPLE 13 (out of scope — product pricing, not capital allocation):
+  Span: "We launched for Prime members the ability to get one medical subscription for
+  $9 a month or $99 a year." → SKIP (product/subscription pricing, not capital allocation)
+
+EXAMPLE 14 (out of scope — vague liquidity comment, not capital allocation):
+  Span: "We're glad to have better liquidity and we're going to try to continue to build
+  that." → SKIP (no specific action, no dollar amount, not a capital allocation decision)
 """
 
 

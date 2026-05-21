@@ -9,7 +9,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from extractor.extract import deduplicate, enrich_result
+from extractor.extract import deduplicate, enrich_result, filter_vague
 from extractor.loader import TranscriptLoader
 from extractor.output import write_csv, write_json
 from extractor.prompts import SYSTEM_PROMPT, build_user_prompt
@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
         print(text, file=sys.stderr)
 
     raw = _extract(args.ticker.upper(), args.transcript_id, call_date, text)
-    result = deduplicate(raw)
+    result = deduplicate(filter_vague(raw))
 
     # Load the raw transcript DataFrame for provenance enrichment
     transcript_df = loader._df[loader._df["transcriptid"] == args.transcript_id]
