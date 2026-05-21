@@ -70,6 +70,7 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+docs/superpowers/
 
 # PyBuilder
 .pybuilder/
@@ -219,3 +220,7 @@ __marimo__/
 
 # Claude
 .claude/settings.local.json
+
+# Agent run traces (per-run, large, not source)
+data/traces/
+
