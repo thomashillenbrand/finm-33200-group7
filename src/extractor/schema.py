@@ -13,11 +13,18 @@ NUMERICAL_CATEGORY = Literal[
     "revenue_growth",
     "eps",
     "margins",
+    "operating_income",
+    "operating_income_growth",
     "capex",
     "volume",
     "units",
     "other_numerical",
 ]
+_VALID_NUMERICAL_CATEGORIES = {
+    "revenue", "revenue_growth", "eps", "margins",
+    "operating_income", "operating_income_growth",
+    "capex", "volume", "units", "other_numerical",
+}
 HORIZON = Literal["next_quarter", "next_year", "multi_year", "unspecified"]
 CONFIDENCE = Literal["certain", "likely", "conditional", "hedged"]
 CAPITAL_SUBCATEGORY = Literal["buyback", "dividend", "capex_plan", "debt"]
@@ -52,14 +59,45 @@ ExtractorClaim = Annotated[
 ]
 
 
+class _FlatClaim(BaseModel):
+    """Flat schema for OpenAI structured-output call (avoids oneOf which the API rejects)."""
+
+    type: Literal["numerical", "capital_allocation"]
+    source_span: str
+    horizon: HORIZON
+    confidence_language: CONFIDENCE
+    value_or_amount: str | None
+    # numerical fields (null for capital_allocation claims)
+    category: str | None
+    metric: str | None
+    # capital allocation field (null for numerical claims)
+    subcategory: Literal["buyback", "dividend", "capex_plan", "debt"] | None
+
+    def to_typed(self) -> "NumericalGuidanceClaim | CapitalAllocationClaim":
+        if self.type == "numerical":
+            raw_cat = (self.category or "").lower().replace(" ", "_")
+            safe_cat = raw_cat if raw_cat in _VALID_NUMERICAL_CATEGORIES else "other_numerical"
+            return NumericalGuidanceClaim(
+                source_span=self.source_span,
+                horizon=self.horizon,
+                confidence_language=self.confidence_language,
+                value_or_amount=self.value_or_amount,
+                category=safe_cat,  # type: ignore[arg-type]
+                metric=self.metric or self.category or "unknown",
+            )
+        return CapitalAllocationClaim(
+            source_span=self.source_span,
+            horizon=self.horizon,
+            confidence_language=self.confidence_language,
+            value_or_amount=self.value_or_amount,
+            subcategory=self.subcategory or "buyback",
+        )
+
+
 class _ClaimsWrapper(BaseModel):
     """Used only for the LLM structured-output call — no metadata fields."""
-    claims: list[
-        Annotated[
-            Union[NumericalGuidanceClaim, CapitalAllocationClaim],
-            Field(discriminator="type"),
-        ]
-    ] = Field(default_factory=list)
+
+    claims: list[_FlatClaim] = Field(default_factory=list)
 
 
 class ExtractionResult(BaseModel):

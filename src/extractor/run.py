@@ -32,7 +32,7 @@ def _extract(ticker: str, transcript_id: int, call_date: date, text: str) -> Ext
         ticker=ticker,
         transcript_id=transcript_id,
         call_date=call_date,
-        claims=wrapper.claims,
+        claims=[c.to_typed() for c in wrapper.claims],
     )
 
 
