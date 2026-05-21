@@ -1,0 +1,25 @@
+[project]
+name = "verifier"
+version = "0.1.0"
+description = "Verification agent for forward-looking claims (FINM 33200 Group 7)"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.7",
+    "deepagents>=0.3.12,<0.4",
+    "langchain>=0.3",
+    "langchain-openai>=0.2",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pip-tools>=7.4",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

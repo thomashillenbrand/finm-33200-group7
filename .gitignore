@@ -220,3 +220,7 @@ __marimo__/
 
 # Claude
 .claude/settings.local.json
+
+# Agent run traces (per-run, large, not source)
+data/traces/
+
