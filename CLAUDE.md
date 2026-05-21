@@ -41,12 +41,13 @@ Three deliverables:
 - `proposal.md` — submitted proposal (the formal scope)
 - `workplan.md` — 10-day execution plan with workstreams and daily milestones
 - `pitch.md` — older framing, not authoritative; use proposal/CLAUDE.md when in conflict
+- `README.md` — setup, project structure, and quick-smoke-test instructions for the verifier package
 
 ## Workstreams
 
 - **A. Data infrastructure** — transcripts, SEC filings (EDGAR), Compustat loader, sample selection
 - **B. Claim extraction pipeline** — LLM extraction with typed schema, prompt engineering
-- **C. Verification agent** — agentic search over SEC filings
+- **C. Verification agent** — agentic search over SEC filings. *Iteration 1 (stubbed tools, deepagents + Pydantic, evidence/verdict modes) landed on `feature/build-agent-scaffold` on 2026-05-21; see README.md for setup and the CLI.*
 - **D. Evaluation & writeup** — gold-set labeling, agent scoring, profile assembly, paper, defense prep
 
 Gold-set labeling is a whole-team sprint on days 6–7, not loaded onto stream D alone.

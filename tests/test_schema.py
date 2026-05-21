@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from verifier.schema import Claim, EvidenceItem, EvidenceBundle, Verdict
+from verifier.agent import _output_schema
 
 
 def test_claim_constructs_from_iso_date_string():
@@ -47,3 +48,13 @@ def test_verdict_accepts_known_labels():
 def test_verdict_rejects_unknown_label():
     with pytest.raises(ValidationError):
         Verdict(items=[], verdict="maybe", reasoning="r")
+
+
+def test_output_schema_mode_mapping():
+    """Lock down which schema each mode produces — the load-bearing labeling guarantee.
+
+    If a refactor ever flipped these or made evidence mode return Verdict, the
+    labeling workflow would silently start biasing labelers.
+    """
+    assert _output_schema("evidence") is EvidenceBundle
+    assert _output_schema("verdict") is Verdict

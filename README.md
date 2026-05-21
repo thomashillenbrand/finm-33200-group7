@@ -15,11 +15,22 @@ finm-33200-group7/
 ├── environment.yml            # mamba env spec (python=3.12, pip-tools)
 ├── .env.example               # template for API keys and other settings
 ├── src/
-│   └── verifier/              # workstream C — verification agent
-├── tests/                     # smoke + unit tests
+│   └── verifier/              # workstream C — verification agent (iteration 1: stubbed tools)
+│       ├── __init__.py        # re-exports the public API
+│       ├── schema.py          # Pydantic models: Claim, EvidenceItem, EvidenceBundle, Verdict
+│       ├── corpus.py          # iteration-1 stub: loads canned excerpts from data/stub/
+│       ├── tools.py           # search_filings tool (stubbed; real EDGAR in iteration 2)
+│       ├── trace.py           # JSON+Markdown trace writer (adapted from agentic-rag-edgar-demo)
+│       ├── agent.py           # build_agent, verify, verify_from_dict
+│       └── run.py             # CLI: python -m verifier.run --claim ... --mode {evidence,verdict}
+├── tests/
+│   ├── test_schema.py         # Pydantic schema tests (incl. the no-verdict-on-EvidenceBundle guarantee)
+│   ├── test_corpus.py         # stub corpus loader test
+│   ├── test_tools.py          # search_filings stub test
+│   └── test_smoke.py          # end-to-end live tests (marked `live`; run with `pytest -m live`)
 ├── data/
-│   ├── stub/                  # canned data for early iterations
-│   └── traces/                # agent run traces (gitignored)
+│   ├── stub/                  # canned fixtures (example_claim.json + canned_excerpts.json)
+│   └── traces/                # per-run agent traces (gitignored)
 └── docs/                      # design docs and other supporting material
 ```
 
@@ -44,6 +55,26 @@ pip install -e ".[dev]"                      # editable install + dev tools (pyt
 cp .env.example .env
 #    then edit .env and set OPENAI_API_KEY
 ```
+
+### Quick smoke test
+
+Once setup is complete, confirm everything is wired up:
+
+````bash
+# Fast unit tests (no API calls)
+pytest -v
+
+# End-to-end smoke tests (require OPENAI_API_KEY in .env; ~2 OpenAI calls per test)
+pytest -m live -v
+
+# Run the agent on the stub claim — see the full trace and the structured output
+python -m verifier.run --claim data/stub/example_claim.json --mode evidence
+python -m verifier.run --claim data/stub/example_claim.json --mode verdict
+````
+
+If `pytest -v` shows 9 passed and `python -m verifier.run` produces an
+`EvidenceBundle` JSON dump, the scaffold is healthy. Traces from each run
+land in `data/traces/` (gitignored).
 
 ### Adding or updating dependencies
 

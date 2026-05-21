@@ -21,6 +21,7 @@ from langchain.chat_models import init_chat_model
 
 from verifier.schema import Claim, EvidenceBundle, Verdict
 from verifier.tools import search_filings
+from verifier.trace import to_records, save_trace, print_trace
 
 Mode = Literal["evidence", "verdict"]
 MODEL_NAME = "openai:gpt-4o-mini"
@@ -149,8 +150,6 @@ def verify(
         trace: If True, save JSON+MD trace files to data/traces/ and print the
             trace to stdout. Pass False for smoke tests / notebook callers.
     """
-    from verifier.trace import to_records, save_trace, print_trace
-
     agent = build_agent(mode)
     user_message = (
         f"Claim made on {claim.call_date.isoformat()} by {claim.ticker}: \"{claim.text}\"\n\n"
