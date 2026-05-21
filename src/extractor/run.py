@@ -9,7 +9,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from extractor.extract import deduplicate, enrich_result
 from extractor.loader import TranscriptLoader
+from extractor.output import write_csv, write_json
 from extractor.prompts import SYSTEM_PROMPT, build_user_prompt
 from extractor.schema import ExtractionResult, _ClaimsWrapper
 
@@ -44,7 +46,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--transcript-id", type=int)
     parser.add_argument("--print-input", action="store_true",
                         help="Print assembled transcript to stderr before extraction.")
-    parser.add_argument("--out", type=Path, help="Save extraction JSON to this path.")
+    parser.add_argument("--out", type=Path, help="Save enriched JSON to this path.")
+    parser.add_argument("--csv", type=Path, help="Also save a CSV to this path.")
     args = parser.parse_args(argv)
 
     load_dotenv()
@@ -69,15 +72,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.print_input:
         print(text, file=sys.stderr)
 
-    result = _extract(args.ticker.upper(), args.transcript_id, call_date, text)
+    raw = _extract(args.ticker.upper(), args.transcript_id, call_date, text)
+    result = deduplicate(raw)
 
-    output_json = result.model_dump_json(indent=2)
+    # Load the raw transcript DataFrame for provenance enrichment
+    transcript_df = loader._df[loader._df["transcriptid"] == args.transcript_id]
+    enriched = enrich_result(result, transcript_df)
+
+    n = len(enriched["claims"])
+
     if args.out:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(output_json, encoding="utf-8")
-        print(f"Saved {len(result.claims)} claims to {args.out}")
+        write_json(enriched, args.out)
+        print(f"Saved {n} claims (JSON) -> {args.out}")
     else:
-        print(output_json)
+        import json
+        print(json.dumps(enriched, indent=2))
+
+    if args.csv:
+        write_csv(enriched, args.csv)
+        print(f"Saved {n} claims (CSV)  -> {args.csv}")
 
     return 0
 
