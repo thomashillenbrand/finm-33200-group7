@@ -35,10 +35,10 @@ mamba env create -f environment.yml
 mamba activate truth
 
 # 2. Install locked Python dependencies
-pip install -r requirements.txt
+pip install -r requirements.txt              # locked runtime install
 
 # 3. Editable install of the project's source packages
-pip install -e .
+pip install -e ".[dev]"                      # editable install + dev tools (pytest, pip-tools)
 
 # 4. Configure secrets
 cp .env.example .env
