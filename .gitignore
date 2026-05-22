@@ -224,3 +224,9 @@ __marimo__/
 # Agent run traces (per-run, large, not source)
 data/traces/
 
+# Raw data pulled from WRDS/EDGAR (regenerate with pull_data.py)
+Pulled_data/
+
+# Extraction run outputs (large, generated artifacts)
+data/extraction_runs/
+
