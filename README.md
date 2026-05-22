@@ -51,7 +51,7 @@ Workstreams A (data infrastructure) and D (evaluation & writeup) will add their 
 
 ## Setup
 
-Prerequisites: [mamba](https://mamba.readthedocs.io/) (or conda), an OpenAI API key.
+Prerequisites: [mamba](https://mamba.readthedocs.io/) (or conda), an OpenAI API key, and a WRDS account.
 
 ```bash
 # 1. Create the environment (default name: truth — pass -n <other> to override)

@@ -46,7 +46,8 @@ Three deliverables:
 ## Workstreams
 
 - **A. Data infrastructure** — transcripts, SEC filings (EDGAR), Compustat loader, sample selection
-- **B. Claim extraction pipeline** — LLM extraction with typed schema, prompt engineering. *Iteration 1 (the `extractor` package: per-call OpenAI structured-output extraction, lightweight typed `Claim` schema, deterministic quote-back-matching for provenance, horizon resolution, exact-duplicate dedup, and a CLI) landed on `feature/build-extraction-pipeline` on 2026-05-21; see README.md for the CLI.*
+- **B.1. Claim extraction pipeline** — LLM extraction with typed schema, prompt engineering. *Iteration 1 (the `extractor` package: per-call OpenAI structured-output extraction, lightweight typed `Claim` schema, deterministic quote-back-matching for provenance, horizon resolution, exact-duplicate dedup, and a CLI) landed on `feature/build-extraction-pipeline` on 2026-05-21; see README.md for the CLI.*
+- **B.2. Claim extraction pipeline** — *Iteration 1 landed on `feature/claim-extraction-scaffold` on 2026-05-21.* Package at `src/extractor/`: typed schema (NumericalGuidanceClaim / CapitalAllocationClaim discriminated union), TranscriptLoader for WRDS parquet format, extraction prompts with few-shot examples, horizon resolver, provenance/speaker matching, deduplication, JSON + CSV output, spot-check + scoring scripts, for_verifier.py handoff for workstream C. 29 offline tests pass. Pilot extraction run on 3 AMZN calls (12 claims). Use `python -m extractor.run` CLI.
 - **C. Verification agent** — agentic search over SEC filings. *Iteration 1 (stubbed tools, deepagents + Pydantic, evidence/verdict modes) landed on `feature/build-agent-scaffold` on 2026-05-21; see README.md for setup and the CLI.*
 - **D. Evaluation & writeup** — gold-set labeling, agent scoring, profile assembly, paper, defense prep
 
