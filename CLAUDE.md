@@ -41,11 +41,11 @@ Three deliverables:
 - `proposal.md` — submitted proposal (the formal scope)
 - `workplan.md` — 10-day execution plan with workstreams and daily milestones
 - `pitch.md` — older framing, not authoritative; use proposal/CLAUDE.md when in conflict
-- `README.md` — setup, project structure, smoke tests, and CLI usage for the extractor and verifier packages
+- `README.md` — setup, project structure, smoke tests, and CLI usage for the data_pull, extractor, and verifier packages
 
 ## Workstreams
 
-- **A. Data infrastructure** — transcripts, SEC filings (EDGAR), Compustat loader, sample selection
+- **A. Data infrastructure** — transcripts, SEC filings (EDGAR), Compustat loader, sample selection. *Per-ticker loader landed as `src/data_pull.py` on 2026-05-22: `python -m data_pull <TICKER> --start YYYY-MM-DD` writes WRDS transcripts (parquet), Compustat quarterly fundamentals (parquet), and SEC 10-K/10-Q/8-K primary docs (HTML) into `Pulled_data/<TICKER>/`. Idempotent. See README for output layout. Authored by Brendan — kept as a single file pending his approval before further restructuring.*
 - **B.1. Claim extraction pipeline** — LLM extraction with typed schema, prompt engineering. *Iteration 1 (the `extractor` package: per-call OpenAI structured-output extraction, lightweight typed `Claim` schema, deterministic quote-back-matching for provenance, horizon resolution, exact-duplicate dedup, and a CLI) landed on `feature/build-extraction-pipeline` on 2026-05-21; see README.md for the CLI.*
 - **B.2. Claim extraction pipeline** — *Iteration 1 landed on `feature/claim-extraction-scaffold` on 2026-05-21.* Package at `src/extractor/`: typed schema (NumericalGuidanceClaim / CapitalAllocationClaim discriminated union), TranscriptLoader for WRDS parquet format, extraction prompts with few-shot examples, horizon resolver, provenance/speaker matching, deduplication, JSON + CSV output, spot-check + scoring scripts, for_verifier.py handoff for workstream C. 29 offline tests pass. Pilot extraction run on 3 AMZN calls (12 claims). Use `python -m extractor.run` CLI.
 - **C. Verification agent** — agentic search over SEC filings. *Iteration 1 (stubbed tools, deepagents + Pydantic, evidence/verdict modes) landed on `feature/build-agent-scaffold` on 2026-05-21; see README.md for setup and the CLI.*
