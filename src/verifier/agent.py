@@ -14,13 +14,32 @@ Two LLM calls per verification — acceptable cost for iteration 1.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 from deepagents import create_deep_agent
 from langchain.chat_models import init_chat_model
+from langchain_community.cache import SQLiteCache
+from langchain_core.globals import set_llm_cache
 
 from schemas import Claim, EvidenceBundle, Verdict
 from verifier.trace import to_records, save_trace, print_trace
+
+_LLM_CACHE_PATH = Path("pulled_data") / ".cache" / "llm_cache.sqlite"
+
+
+def _configure_cache(enabled: bool) -> None:
+    """Process-global LLM cache toggle.
+
+    On by default (enabled=True). The cache is keyed by (prompt, model,
+    params), so prompt edits naturally invalidate. Pass enabled=False (e.g.
+    via the CLI's --no-cache) for fresh runs.
+    """
+    if not enabled:
+        set_llm_cache(None)
+        return
+    _LLM_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    set_llm_cache(SQLiteCache(database_path=str(_LLM_CACHE_PATH)))
 
 Mode = Literal["evidence", "verdict"]
 MODEL_NAME = "openai:gpt-4o-mini"
