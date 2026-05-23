@@ -48,11 +48,21 @@ class _MockEmbeddings:
 
 @pytest.fixture
 def mock_embeddings(monkeypatch):
-    """Replace `verifier.index._make_embeddings_client` with the mock."""
+    """Replace the OpenAI embeddings factory with a deterministic mock.
+
+    `_make_embeddings_client` is referenced in two places — `verifier.index`
+    (where it's defined, used by build_index) and `verifier.corpus` (which
+    re-imports it for SearchIndex). Patching both bindings is necessary
+    because `from … import` binds a separate reference in each module.
+    """
     from verifier import index
 
     mock = _MockEmbeddings()
     monkeypatch.setattr(index, "_make_embeddings_client", lambda: mock)
-    # Also patch the corpus module's factory once Task 14 lands; it imports
-    # from the same module so the same monkeypatch covers both.
+    try:
+        from verifier import corpus
+        monkeypatch.setattr(corpus, "_make_embeddings_client", lambda: mock,
+                            raising=False)
+    except ImportError:
+        pass
     return mock

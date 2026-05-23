@@ -1,23 +1,18 @@
 """Agent-facing tools.
 
-Iteration 1 ships one stubbed tool. The signature mirrors what the real
-EDGAR-backed version will need, so iteration 2 swaps the body, not the
-interface.
+Iteration 2 stubs out `search_filings` with a no-op pending the real
+SearchIndex-backed implementation in Task 16. The interface (signature +
+return type) is stable; only the body changes between iterations.
 
 Note for human readers: the function docstring for `search_filings` is
 LLM-facing and is kept aspirational — it documents the filter parameters
-(after_date, before_date, forms) as if they work. In iteration 1 the body
-*accepts but ignores* those filters. This is deliberate: the agent's
-tool-call traces should show it reasoning about ticker, dates, and forms
-even before real filtering is wired in, so we know it's targeting the
-right filings when iteration 2 lands.
+(after_date, before_date, forms) as if they work. Task 16 wires them to
+SearchIndex.query; until then the body returns an empty result.
 """
 
 from __future__ import annotations
 
 from datetime import date
-
-from verifier.corpus import load_stub_excerpts
 
 
 def search_filings(
@@ -39,9 +34,7 @@ def search_filings(
 
     Returns:
         Matching excerpts with source citations, joined into one string.
+        (Task 16 will wire this to SearchIndex.query; currently returns empty.)
     """
-    # Iteration 1: ignore filter args, return all canned excerpts.
-    # Note: load_stub_excerpts() returns a list of EvidenceItem objects,
-    # so access .source and .excerpt as attributes (not dict keys).
-    excerpts = load_stub_excerpts()
-    return "\n\n---\n\n".join(f"[{e.source}]\n{e.excerpt}" for e in excerpts)
+    # Iteration 2 stub: real SearchIndex.query integration in Task 16.
+    return ""
