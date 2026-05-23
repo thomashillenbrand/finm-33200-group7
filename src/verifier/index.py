@@ -281,8 +281,11 @@ def build_index(ticker: str, *, refresh: bool = False) -> None:
     else:
         to_embed = new_df[~new_df["chunk_id"].isin(surviving_existing_ids)].reset_index(drop=True)
 
-    client = _make_embeddings_client()
     if not to_embed.empty:
+        # Construct the embeddings client only when we actually need to embed.
+        # Idempotent rebuilds (every chunk already cached) would otherwise
+        # require OPENAI_API_KEY in the env even though no call is made.
+        client = _make_embeddings_client()
         vectors = np.array(client.embed_documents(to_embed["text"].tolist()),
                            dtype=np.float32)
         # Normalize for cosine similarity via IndexFlatIP.

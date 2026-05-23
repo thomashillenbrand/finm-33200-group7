@@ -9,6 +9,7 @@ visible at the seam.
 from __future__ import annotations
 
 from datetime import date
+from functools import lru_cache
 from pathlib import Path
 from typing import ClassVar
 
@@ -69,6 +70,22 @@ class SearchIndex:
         cls._cache[ticker] = inst
         return inst
 
+    @lru_cache(maxsize=512)
+    def _embed_query_cached(self, text: str) -> tuple[float, ...]:
+        """Per-instance LRU around the embedding call.
+
+        Returns a tuple (not a list) because `lru_cache` requires hashable
+        returns AND its hashing of `(self, text)` makes the cache instance-
+        scoped — different SearchIndex instances don't share keys. That's the
+        right scope: a query embedding is bound to the corpus it was issued
+        against, and corpora don't share namespaces.
+        """
+        client = _make_embeddings_client()
+        return tuple(client.embed_query(text))
+
+    def _embed_query(self, text: str) -> list[float]:
+        return list(self._embed_query_cached(text))
+
     def query(
         self,
         text: str,
@@ -94,15 +111,14 @@ class SearchIndex:
         if whitelist.size == 0:
             return []
 
-        # 2. Embed the query.
-        client = _make_embeddings_client()
-        q = np.array(client.embed_query(text), dtype=np.float32)
+        # 2. Embed the query (per-instance LRU keeps identical queries free).
+        q = np.array(self._embed_query(text), dtype=np.float32)
         n = np.linalg.norm(q)
         if n:
             q = q / n
 
         # 3. Oversample, then post-filter by whitelist.
-        k_inner = min(max(k * 5, k), self._faiss.ntotal)
+        k_inner = min(k * 5, self._faiss.ntotal)
         scores, ids = self._faiss.search(q.reshape(1, -1), k_inner)
         scores, ids = scores[0], ids[0]
 
@@ -131,7 +147,7 @@ class SearchIndex:
                 # Cosine similarity is in [-1, 1] for unit vectors; remap to
                 # [0, 1] for the EvidenceItem schema's ge=0,le=1 constraint.
                 score=max(0.0, min(1.0, (score + 1.0) / 2.0)),
-                edgar_url=_edgar_url(self.ticker, row["accession_no"], row["local_path"]),
+                edgar_url=_edgar_url(self.ticker, row["form"]),
             ))
         return items
 
@@ -140,16 +156,15 @@ def _format_source(form: str, filing_date: date, accession_no: str) -> str:
     return f"{form} filed {filing_date.isoformat()}, accession {accession_no}"
 
 
-def _edgar_url(ticker: str, accession_no: str, local_path: str) -> str | None:
+def _edgar_url(ticker: str, form: str) -> str | None:
     """Lightweight EDGAR deep-link best-effort.
 
     We don't have the CIK on hand at query time (the chunks parquet doesn't
-    carry it). For iter-2 we return a `browse-edgar` URL keyed by ticker;
-    iter-3 can plumb the CIK through from the SEC filings index if stronger
-    guarantees are needed.
+    carry it). For iter-2 we return a `browse-edgar` URL keyed by ticker and
+    form; iter-3 can plumb the CIK through from the SEC filings index if
+    stronger guarantees are needed.
     """
-    fname = Path(local_path).name
     return (
         f"https://www.sec.gov/cgi-bin/browse-edgar"
-        f"?action=getcompany&CIK={ticker}&type={fname.split('.')[0]}"
+        f"?action=getcompany&CIK={ticker}&type={form}"
     )
