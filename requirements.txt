@@ -14,6 +14,8 @@ anyio==4.13.0
     #   google-genai
     #   httpx
     #   openai
+asttokens==3.0.1
+    # via stack-data
 bracex==2.6
     # via wcmatch
 certifi==2026.5.20
@@ -27,6 +29,8 @@ charset-normalizer==3.4.7
     # via requests
 cryptography==48.0.0
     # via google-auth
+decorator==5.3.1
+    # via ipython
 deepagents==0.3.12
     # via verifier (pyproject.toml)
 distro==1.9.0
@@ -36,12 +40,16 @@ distro==1.9.0
     #   openai
 docstring-parser==0.18.0
     # via anthropic
+executing==2.2.1
+    # via stack-data
 filetype==1.2.0
     # via langchain-google-genai
 google-auth[requests]==2.53.0
     # via google-genai
 google-genai==1.75.0
     # via langchain-google-genai
+greenlet==3.5.1
+    # via sqlalchemy
 h11==0.16.0
     # via httpcore
 httpcore==1.0.9
@@ -58,6 +66,12 @@ idna==3.15
     #   anyio
     #   httpx
     #   requests
+ipython==9.8.0
+    # via wrds
+ipython-pygments-lexers==1.1.1
+    # via ipython
+jedi==0.20.0
+    # via ipython
 jiter==0.15.0
     # via
     #   anthropic
@@ -100,8 +114,14 @@ langgraph-sdk==0.3.14
     # via langgraph
 langsmith==0.8.5
     # via langchain-core
+matplotlib-inline==0.2.2
+    # via ipython
+numpy==2.4.6
+    # via pandas
 openai==2.37.0
-    # via langchain-openai
+    # via
+    #   langchain-openai
+    #   verifier (pyproject.toml)
 orjson==3.11.9
     # via
     #   langgraph-sdk
@@ -112,6 +132,24 @@ packaging==26.2
     # via
     #   langchain-core
     #   langsmith
+pandas==2.2.3
+    # via
+    #   verifier (pyproject.toml)
+    #   wrds
+parso==0.8.7
+    # via jedi
+pexpect==4.9.0
+    # via ipython
+prompt-toolkit==3.0.52
+    # via ipython
+psycopg2-binary==2.9.12
+    # via wrds
+ptyprocess==0.7.0
+    # via pexpect
+pure-eval==0.2.3
+    # via stack-data
+pyarrow==24.0.0
+    # via verifier (pyproject.toml)
 pyasn1==0.6.3
     # via pyasn1-modules
 pyasn1-modules==0.4.2
@@ -132,8 +170,16 @@ pydantic==2.13.4
     #   verifier (pyproject.toml)
 pydantic-core==2.46.4
     # via pydantic
+pygments==2.20.0
+    # via
+    #   ipython
+    #   ipython-pygments-lexers
+python-dateutil==2.9.0.post0
+    # via pandas
 python-dotenv==1.2.2
     # via verifier (pyproject.toml)
+pytz==2026.2
+    # via pandas
 pyyaml==6.0.3
     # via langchain-core
 regex==2026.5.9
@@ -147,11 +193,17 @@ requests==2.34.2
     #   tiktoken
 requests-toolbelt==1.0.0
     # via langsmith
+six==1.17.0
+    # via python-dateutil
 sniffio==1.3.1
     # via
     #   anthropic
     #   google-genai
     #   openai
+sqlalchemy==2.0.49
+    # via wrds
+stack-data==0.6.3
+    # via ipython
 tenacity==9.1.4
     # via
     #   google-genai
@@ -160,6 +212,10 @@ tiktoken==0.13.0
     # via langchain-openai
 tqdm==4.67.3
     # via openai
+traitlets==5.15.0
+    # via
+    #   ipython
+    #   matplotlib-inline
 typing-extensions==4.15.0
     # via
     #   anthropic
@@ -170,9 +226,12 @@ typing-extensions==4.15.0
     #   openai
     #   pydantic
     #   pydantic-core
+    #   sqlalchemy
     #   typing-inspection
 typing-inspection==0.4.2
     # via pydantic
+tzdata==2026.2
+    # via pandas
 urllib3==2.7.0
     # via requests
 uuid-utils==0.16.0
@@ -181,8 +240,12 @@ uuid-utils==0.16.0
     #   langsmith
 wcmatch==10.1
     # via deepagents
+wcwidth==0.7.0
+    # via prompt-toolkit
 websockets==16.0
     # via google-genai
+wrds==3.5.0
+    # via verifier (pyproject.toml)
 xxhash==3.7.0
     # via
     #   langgraph

@@ -15,7 +15,8 @@ finm-33200-group7/
 ├── environment.yml            # mamba env spec (python=3.12, pip-tools)
 ├── .env.example               # template for API keys and other settings
 ├── src/
-│   ├── extractor/             # workstream B — claim extraction pipeline
+│   ├── data_pull.py           # workstream A — single-file CLI: WRDS transcripts + Compustat quarterly + SEC EDGAR filings, per ticker
+│   ├── extractor/             # workstream B — claim extraction pipeline (iteration 1)
 │   │   ├── __init__.py        # re-exports the public API
 │   │   ├── schema.py          # Pydantic models: Claim, ExtractedClaim, ExtractionResponse
 │   │   ├── reader.py          # loads transcript CSVs, groups turns into earnings calls
@@ -25,6 +26,18 @@ finm-33200-group7/
 │   │   ├── extract.py         # build_extractor, extract_call, extract_transcript, dedupe_claims
 │   │   ├── output.py          # writes the claims CSV
 │   │   └── run.py             # CLI: python -m extractor.run --input ... --output ...
+│   ├── extractor_2/           # workstream B — claim extraction pipeline (iteration 2; will be merged with extractor/)
+│   │   ├── __init__.py        # re-exports the public API
+│   │   ├── schema.py          # Pydantic models: NumericalGuidanceClaim / CapitalAllocationClaim discriminated union
+│   │   ├── loader.py          # TranscriptLoader for WRDS-format parquet (matches data_pull output)
+│   │   ├── horizon.py         # categorical horizon → date range
+│   │   ├── prompts.py         # extraction system prompt + few-shot example
+│   │   ├── provenance.py      # links a source span back to a transcript component
+│   │   ├── extract.py         # filter_vague, deduplicate, enrich_result
+│   │   ├── output.py          # writes per-call JSON + CSV
+│   │   ├── for_verifier.py    # converts ExtractionResult → verifier.schema.Claim
+│   │   ├── run.py             # CLI: python -m extractor.run --parquet ... --ticker ...
+│   │   └── batch_run.py       # CLI: python -m extractor.batch_run (4 tickers × ≤20 calls, 2020–2025)
 │   └── verifier/              # workstream C — verification agent (iteration 1: stubbed tools)
 │       ├── __init__.py        # re-exports the public API
 │       ├── schema.py          # Pydantic models: Claim, EvidenceItem, EvidenceBundle, Verdict
@@ -44,10 +57,11 @@ finm-33200-group7/
 │   ├── claims/                # extractor output — claims CSVs
 │   ├── stub/                  # canned fixtures (example_claim.json + canned_excerpts.json)
 │   └── traces/                # per-run agent traces (gitignored)
+├── Pulled_data/               # data_pull output: per-ticker transcripts, Compustat, SEC filings (gitignored)
 └── docs/                      # design docs and other supporting material
 ```
 
-Workstreams A (data infrastructure) and D (evaluation & writeup) will add their own modules under `src/` as they come online.
+Workstream D (evaluation & writeup) will add its own modules under `src/` as it comes online.
 
 ## Setup
 
@@ -66,7 +80,9 @@ pip install -e ".[dev]"                      # editable install + dev tools (pyt
 
 # 4. Configure secrets
 cp .env.example .env
-#    then edit .env and set OPENAI_API_KEY
+#    then edit .env and set:
+#      OPENAI_API_KEY — required for the extractor and verifier
+#      WRDS_USERNAME  — required for `python -m data_pull` (workstream A)
 ```
 
 ### Quick smoke test
@@ -88,6 +104,52 @@ python -m verifier.run --claim data/stub/example_claim.json --mode verdict
 If `pytest -v` is all green and `python -m verifier.run` produces an
 `EvidenceBundle` JSON dump, the scaffold is healthy. Traces from each run
 land in `data/traces/` (gitignored).
+
+## Data pulls (workstream A)
+
+`src/data_pull.py` is a single-file CLI that, for one ticker, downloads
+everything we need from external sources into a per-ticker tree under
+`Pulled_data/`:
+
+- earnings-call transcript metadata + full text from WRDS Capital IQ
+  (`ciq_transcripts.*`) → parquet
+- Compustat quarterly fundamentals (`comp.fundq`, 80-ish fields covering
+  balance sheet / income statement / cash flow / market) → parquet
+- SEC EDGAR primary documents for 10-K, 10-Q, 8-K, plus a parquet index
+  of all filings → HTML files + parquet
+
+Run it once per ticker:
+
+```bash
+python -m data_pull AMZN --start 2018-01-01
+python -m data_pull TSLA --start 2018-01-01
+python -m data_pull KO   --start 2018-01-01
+python -m data_pull LLY  --start 2018-01-01
+```
+
+Each invocation is idempotent — files that already exist are skipped, so
+re-running only fetches new filings. The CLI loads `WRDS_USERNAME` from
+the project-root `.env`; SEC requests use a `User-Agent` from
+`SEC_USER_AGENT` (override in `.env` if you want your email on it).
+
+Output layout for ticker `XXX`:
+
+```
+Pulled_data/XXX/
+├── transcript/   # XXX_metadata.parquet + XXX_transcripts.parquet
+├── Compustat/    # XXX_compustat_quarterly.parquet
+└── SEC/
+    ├── 10-K/...  # primary documents (HTML)
+    ├── 10-Q/...
+    ├── 8-K/...
+    └── XXX_sec_filings_index.parquet
+```
+
+`Pulled_data/` is gitignored — every collaborator pulls their own copy.
+
+Caveat: cash-flow columns in `comp.fundq` (`capxy`, `dvy`, `dltisy`,
+`dltry`, `prstkcy`, etc.) are reported year-to-date. Take first
+differences within each fiscal year to recover per-quarter values.
 
 ## Claim extraction (workstream B)
 

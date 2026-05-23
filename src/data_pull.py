@@ -3,7 +3,7 @@ Download earnings call transcripts and Compustat annual fundamentals for a
 single company, identified by ticker.
 
 Usage:
-    python pull_data.py AMZN --start 2018-01-01
+    python -m data_pull AMZN --start 2018-01-01
 
 Tables used (S&P Capital IQ):
   - ciq_transcripts.wrds_transcript_detail   : transcript metadata
@@ -37,9 +37,8 @@ import requests
 import wrds
 from dotenv import load_dotenv
 
-load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+load_dotenv()  # walks up from cwd to find the project-root .env
 
-WRDS_USERNAME = os.environ["WRDS_USERNAME"]
 BASE_DIR = "Pulled_data"
 
 
@@ -446,7 +445,7 @@ def main():
     for d in dirs.values():
         os.makedirs(d, exist_ok=True)
 
-    db = wrds.Connection(wrds_username=WRDS_USERNAME)
+    db = wrds.Connection(wrds_username=os.environ["WRDS_USERNAME"])
 
     companyid, companyname = resolve_ticker(db, ticker)
     print(f"Resolved {ticker} -> companyid={companyid} ({companyname})")
