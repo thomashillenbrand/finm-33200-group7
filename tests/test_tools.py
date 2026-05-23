@@ -76,3 +76,30 @@ def test_bind_search_filings_call_with_before_date_filter(built_index):
     # 8-K (2024-06-14) and 10-Q (2024-04-30) should not appear.
     assert "2024-06-14" not in result
     assert "2024-04-30" not in result
+
+
+def test_search_tool_widens_when_before_date_equals_after_date(built_index):
+    """When the agent passes a `before_date` equal to the closed-over
+    `after_date`, the window would collapse to a single day and return
+    nothing. The tool layer silently widens by treating `before_date` as
+    None — the agent gets useful evidence back instead of an empty list."""
+    tool = bind_search_filings("MINI", date(2020, 1, 1))
+    fn = getattr(tool, "func", tool)
+    result = fn(query="share repurchase", before_date=date(2020, 1, 1))
+    # Without widen, window is [2020-01-01, 2020-01-01] -> empty.
+    # With widen, all three fixture filings (filed 2024) are in range.
+    assert result != "[no matching filings]"
+    assert "2024" in result
+
+
+def test_search_tool_widens_when_before_date_less_than_after_date(built_index):
+    """Symmetric to the equal case — any `before_date <= after_date` is a
+    non-useful upper bound that the tool layer ignores."""
+    tool = bind_search_filings("MINI", date(2020, 6, 1))
+    fn = getattr(tool, "func", tool)
+    result = fn(query="share repurchase", before_date=date(2020, 3, 1))
+    # Without widen, window is [2020-06-01, 2020-03-01] -> empty.
+    # With widen, after_date=2020-06-01 still floors out, but the upper
+    # bound is dropped, so the 2024 filings pass through.
+    assert result != "[no matching filings]"
+    assert "2024" in result
