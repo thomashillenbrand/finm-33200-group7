@@ -244,6 +244,58 @@ Iter-2 verifies **`capital_allocation` claims only**. A `numerical_guidance`
 claim raises `UnsupportedClaimTypeError`; Compustat-backed numeric verification
 lands in iter 3.
 
+### Model selection
+
+Every model identifier is supplied by a per-task env var — there is **no
+hardcoded fallback in the source**, so the var must be set (the resolver raises
+a `RuntimeError` naming the missing var otherwise). `cp .env.example .env` ships
+working values; change any one to A/B a different model for that stage. They are
+read at use time, so a change takes effect on the next run.
+
+| Env var | Stage |
+|---|---|
+| `EXTRACTOR_MODEL` | Claim extraction (`extractor`) |
+| `VERIFIER_AGENT_MODEL` | Tool-using verifier agent |
+| `VERIFIER_PARSER_MODEL` | Verdict-mode structured-output parser |
+| `EMBEDDING_MODEL` | FAISS document + query embeddings |
+
+The extractor additionally honors `--model` / `model_name=`, which wins over
+`EXTRACTOR_MODEL`. `.env.example` is the canonical list.
+
+## Gold-set evaluation (workstream D)
+
+To measure how good the verifier is, we score its output against a hand-labeled
+gold set. Two questions, both scored from one artifact:
+
+- **Retrieval quality** — do the agent's cited filings include the ones a human
+  labeler marked relevant? (recall@k and precision, at accession-number
+  granularity)
+- **Verdict accuracy** — in `--mode verdict`, does the agent's verdict match the
+  labeler's?
+
+Gold labels live in `data/gold/` as one JSONL row per claim
+(`pilot_<ticker>.jsonl`). The schema and how-to-label steps are in
+[`data/gold/README.md`](data/gold/README.md); the verdict criteria and
+partial-credit policy belong in [`docs/labeling_rubric.md`](docs/labeling_rubric.md)
+(stub — a pending team deliverable; read it before labeling once written).
+Labelers assign evidence and verdicts **independently of what the agent
+surfaced** — that independence is what keeps the evaluation non-circular.
+
+Score a gold file with:
+
+```bash
+mamba run -n truth python -m verifier.eval \
+    --gold data/gold/pilot_tsla.jsonl \
+    --claims data/claims/pilot_claims.csv \
+    --mode evidence --k 8
+```
+
+The scorer looks up each gold claim in the claims CSV, runs the agent live (the
+SQLite chat cache keeps re-scoring cheap), prints summary stats, and writes a
+per-claim CSV (default `data/eval/per_claim_results.csv`). Use `--mode verdict`
+to also score verdict accuracy. `--gold` accepts a directory of `*.jsonl` files
+(per-ticker labels are merged).
+
 ## Adding or updating dependencies
 
 `pyproject.toml` is the source of truth. After editing `[project.dependencies]`:
