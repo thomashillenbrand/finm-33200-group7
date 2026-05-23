@@ -61,6 +61,8 @@ Gold-set labeling is a whole-team sprint on days 6–7, not loaded onto stream D
 5. Extraction: occasional claim-type misclassification (e.g. a product-timeline statement filed as `debt`) — watch for it during gold-set labeling
 6. Extraction: horizon resolver does not handle bare months ("by the end of March") or bare quarters ("Q2" with no year) — extend if resolution coverage matters
 
+Deferred optimizations (kept out of CLAUDE.md to avoid bloat): see `docs/future_optimizations.md`. As of 2026-05-23 the open one is a chunker/embedding/retriever autoresearcher gated on having a small gold set.
+
 ## Execution notes
 
 - **The labeling workflow is load-bearing.** Don't break the agent-as-research-assistant (evidence-only) pattern — letting the agent's verdict bias the labeler creates circularity in the evaluation.
