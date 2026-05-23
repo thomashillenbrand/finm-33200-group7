@@ -323,3 +323,40 @@ def build_index(ticker: str, *, refresh: bool = False) -> None:
 
     _atomic_write(faiss_target, _write_faiss)
     print(f"[index] {ticker}: {len(out_df)} chunks total, {len(to_embed)} newly embedded")
+
+
+import argparse
+
+
+def _cli_main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="verifier.index",
+        description="Build (or incrementally update) the FAISS index for a ticker.",
+    )
+    parser.add_argument("ticker", nargs="?",
+                        help="Ticker symbol (e.g. AMZN). Omit with --all.")
+    parser.add_argument("--refresh", action="store_true",
+                        help="Wipe pulled_data/<TICKER>/index/ and rebuild from scratch.")
+    parser.add_argument("--all", action="store_true",
+                        help="Build indexes for every ticker dir under pulled_data/ "
+                             "that has a SEC filings index.")
+    args = parser.parse_args(argv)
+
+    if args.all:
+        tickers = sorted(
+            p.name for p in PULLED_DATA_ROOT.iterdir()
+            if p.is_dir() and (p / f"{p.name}_sec_filings_index.parquet").exists()
+        )
+        for t in tickers:
+            print(f"[index] === {t} ===")
+            build_index(t, refresh=args.refresh)
+        return 0
+
+    if not args.ticker:
+        parser.error("ticker is required unless --all is set")
+    build_index(args.ticker, refresh=args.refresh)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_cli_main())
