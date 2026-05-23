@@ -18,6 +18,7 @@ against ``ExtractionResponse`` -- the same pattern the verifier uses.
 from __future__ import annotations
 
 import difflib
+import os
 import re
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -35,9 +36,23 @@ from schemas import (
     make_claim_id,
 )
 
-# Mini-tier model, provider-prefixed for ``init_chat_model``. Override via the
-# ``--model`` CLI flag or the ``model_name`` argument.
-MODEL_NAME = "openai:gpt-4o-mini"
+def _resolve_extractor_model(explicit: str | None) -> str:
+    """Resolve the extractor model: explicit arg > ``EXTRACTOR_MODEL`` env.
+
+    There is no hardcoded fallback — the model identifier is configuration and
+    must come from the environment (see ``.env.example``). Resolved at use time
+    inside functions because ``.env`` is loaded in the CLI ``main()`` after this
+    module is imported.
+    """
+    if explicit:
+        return explicit
+    model = os.environ.get("EXTRACTOR_MODEL")
+    if not model:
+        raise RuntimeError(
+            "EXTRACTOR_MODEL is not set. Copy .env.example to .env (it sets the "
+            "model identifiers) or export EXTRACTOR_MODEL before running."
+        )
+    return model
 
 # Reasoning-family models (GPT-5 series, o-series) reject a custom temperature
 # and must run at the model default. Matched as a prefix against the model name
@@ -66,13 +81,14 @@ def _supports_temperature(model_name: str) -> bool:
     return not bare.startswith(_NO_TEMPERATURE_PREFIXES)
 
 
-def build_extractor(model_name: str = MODEL_NAME):
+def build_extractor(model_name: str | None = None):
     """Return an LLM bound to ``ExtractionResponse`` (structured output).
 
     Temperature 0 is used for reproducible extraction where the model supports
     it; GPT-5 / o-series reasoning models reject a custom temperature and run
     at the model default instead. ``max_retries`` covers transient API errors.
     """
+    model_name = _resolve_extractor_model(model_name)
     kwargs: dict = {"max_retries": 3}
     if _supports_temperature(model_name):
         kwargs["temperature"] = 0
@@ -215,7 +231,7 @@ def extract_call(
     call: EarningsCall,
     extractor=None,
     *,
-    model_name: str = MODEL_NAME,
+    model_name: str | None = None,
 ) -> list[Claim]:
     """Extract claims from one earnings call.
 
@@ -227,6 +243,7 @@ def extract_call(
     """
     if not call.management_turns():
         return []
+    model_name = _resolve_extractor_model(model_name)
     if extractor is None:
         extractor = build_extractor(model_name)
 
@@ -253,7 +270,7 @@ def extract_transcript(
     parquet_path,
     *,
     limit: int | None = None,
-    model_name: str = MODEL_NAME,
+    model_name: str | None = None,
     on_call: Callable[[EarningsCall, list[Claim]], None] | None = None,
 ) -> list[Claim]:
     """Extract claims from every call in a transcript parquet.
@@ -270,6 +287,7 @@ def extract_transcript(
     if limit is not None:
         calls = calls[:limit]
 
+    model_name = _resolve_extractor_model(model_name)
     extractor = build_extractor(model_name)
     claims: list[Claim] = []
     for call in calls:

@@ -27,7 +27,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from extractor.extract import MODEL_NAME, extract_transcript
+from extractor.extract import extract_transcript
 from extractor.output import write_claims_csv
 
 
@@ -57,8 +57,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Max calls to process per input file (e.g. 5 for the pilot).",
     )
     parser.add_argument(
-        "--model", default=MODEL_NAME,
-        help=f"Chat model for init_chat_model (default: {MODEL_NAME}).",
+        "--model", default=None,
+        help="Chat model for init_chat_model "
+             "(default: EXTRACTOR_MODEL env or openai:gpt-4o-mini).",
     )
     args = parser.parse_args(argv)
 

@@ -146,12 +146,20 @@ def chunk_text(
 # Repo-relative default; tests monkeypatch this.
 PULLED_DATA_ROOT = Path("pulled_data")
 
-EMBED_MODEL = "text-embedding-3-small"
+def _resolve_embedding_model() -> str:
+    """Embedding model from ``EMBEDDING_MODEL`` (no hardcoded fallback)."""
+    model = os.environ.get("EMBEDDING_MODEL")
+    if not model:
+        raise RuntimeError(
+            "EMBEDDING_MODEL is not set. Copy .env.example to .env (it sets the "
+            "model identifiers) or export EMBEDDING_MODEL before running."
+        )
+    return model
 
 
 def _make_embeddings_client():
     """Embedding client factory — patchable in tests."""
-    return OpenAIEmbeddings(model=EMBED_MODEL)
+    return OpenAIEmbeddings(model=_resolve_embedding_model())
 
 
 def _ticker_dir(ticker: str) -> Path:

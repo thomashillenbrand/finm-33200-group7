@@ -650,16 +650,20 @@ Suggested message: `feat(verifier): add eval scorer (recall@k, precision, verdic
 
 ### Task 5: Replace hardcoded models with `<TASK>_MODEL` env vars + fallback
 
-**Context.** Today the model identifiers are baked into source files. We want each task type to be configurable via a dedicated env var with a baked-in fallback, so we can A/B different models per stage (extractor vs verifier-agent vs parser vs embeddings) without code edits. Naming convention: `<TASK>_MODEL` suffix. No shared `MODEL` value — different stages may want different models.
+**Context.** Today the model identifiers are baked into source files. We want each task type configured via a dedicated env var, **enforced at the env level with no hardcoded fallback in the source** — the resolver raises `RuntimeError` if the var is unset. `.env.example` ships populated working values, so `cp .env.example .env` yields a runnable config; changing any var A/Bs a different model for that stage. Naming convention: `<TASK>_MODEL` suffix. No shared `MODEL` value — different stages may want different models.
 
-| Env var | Default | Replaces | Used in |
+| Env var | `.env.example` value | Replaces | Used in |
 |---|---|---|---|
 | `EXTRACTOR_MODEL` | `openai:gpt-4o-mini` | `MODEL_NAME` in `src/extractor/extract.py` | Claim extraction |
 | `VERIFIER_AGENT_MODEL` | `openai:gpt-4o-mini` | `MODEL_NAME` at the agent-loop call site in `src/verifier/agent.py` | Tool-using verifier agent |
 | `VERIFIER_PARSER_MODEL` | `openai:gpt-4o-mini` | same constant, but at the structured-output parser call site | Verdict-mode JSON parser |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | `EMBED_MODEL` in `src/verifier/index.py` | FAISS doc + query embeddings |
 
-**Implementation gotcha (load-bearing).** Env vars must be read **at use time inside functions**, not at module import. The entrypoint CLIs call `load_dotenv()` inside `main()` — by then the extractor/verifier modules have already been imported, so any module-level constants would have been captured before `.env` loaded. Pattern: a small `_resolve_model_name(explicit, env_var, default)` helper called inside `build_extractor` / the embedding factory / each `init_chat_model` site, doing `explicit or os.environ.get(env_var) or default`.
+**Enforcement, not fallback.** The values above live in `.env.example` only, not in the source. If a var is unset at use time the resolver raises a `RuntimeError` naming the missing var and pointing at `.env.example`. The extractor keeps its explicit-arg override (`--model` / `model_name=`) which wins over the env var; the verifier and embeddings have no explicit override, so it's env-or-raise.
+
+**Implementation gotcha (load-bearing).** Env vars must be read **at use time inside functions**, not at module import. The entrypoint CLIs call `load_dotenv()` inside `main()` — by then the extractor/verifier modules have already been imported, so any module-level constants would have been captured before `.env` loaded. Pattern: a small `_resolve_*_model(...)` helper called inside `build_extractor` / the embedding factory / each `init_chat_model` site, doing `explicit or os.environ.get(env_var)` then raising if still empty.
+
+**Consequence for live tests.** `pytest -m live` and any live CLI run now require these vars in the developer's actual `.env` (not just `.env.example`). A `.env` predating this change must add the four vars or live runs raise.
 
 **Out of scope.** Tokenizer (`cl100k_base`) stays tied to the embedding-model family in code — no env var. If someone swaps in a non-OpenAI embed model later they need to think about tokenizer compatibility separately. API key envs (`OPENAI_API_KEY`, `WRDS_USERNAME`, `SEC_USER_AGENT`) are already env-driven; no changes.
 
@@ -838,20 +842,21 @@ mamba run -n truth pytest -v
 
 Expected: green. Existing extractor/verifier tests that pass explicit `model=` strings keep working unchanged; tests that don't pass a model now pick up the resolver default (still `openai:gpt-4o-mini`), so behavior is invariant.
 
-- [ ] **Step 10: Append a "Model selection (optional)" block to `.env.example`**
+- [ ] **Step 10: Append a "Model selection (required)" block to `.env.example`**
 
 ```
-# --- Model selection (optional) ---------------------------------------------
-# All four default to the values shown if unset. Override per task type to
-# A/B different models without code edits.
-#
-# EXTRACTOR_MODEL=openai:gpt-4o-mini
-# VERIFIER_AGENT_MODEL=openai:gpt-4o-mini
-# VERIFIER_PARSER_MODEL=openai:gpt-4o-mini
-# EMBEDDING_MODEL=text-embedding-3-small
+# --- Model selection (required) ---------------------------------------------
+# Required: one model identifier per task type. The code has no hardcoded
+# fallback — these must be set (this template populates working defaults).
+# Change any of them to A/B a different model for that stage; read at use time,
+# so a change takes effect on the next run.
+EXTRACTOR_MODEL=openai:gpt-4o-mini
+VERIFIER_AGENT_MODEL=openai:gpt-4o-mini
+VERIFIER_PARSER_MODEL=openai:gpt-4o-mini
+EMBEDDING_MODEL=text-embedding-3-small
 ```
 
-Lines stay commented in the template — the defaults are baked into code, so no one needs to copy these into their `.env` unless they're switching models.
+Lines are **uncommented** — they're required, so `cp .env.example .env` must produce a runnable config.
 
 - [ ] **Step 11: Commit (ask user)**
 
