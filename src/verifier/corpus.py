@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from verifier.schema import EvidenceItem
+from schemas import EvidenceItem
 
 STUB_PATH = Path(__file__).resolve().parents[2] / "data" / "stub" / "canned_excerpts.json"
 
