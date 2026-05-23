@@ -1,5 +1,18 @@
 {
+  "claim_id": "TSLA_20240124_examplestub",
   "ticker": "TSLA",
   "call_date": "2024-01-24",
-  "text": "We expect production growth of around 50% in 2024."
+  "company": "Tesla, Inc.",
+  "fiscal_period": "Q4 2023",
+  "source_call": "Tesla, Inc. Q4 2023 Earnings Call",
+  "claim_type": "capex",
+  "verbatim_quote": "We expect capital expenditures to exceed $10 billion in 2024.",
+  "summary": "Management expects 2024 capex above $10 billion.",
+  "horizon_raw": "in 2024",
+  "horizon_period": "FY2024",
+  "horizon_end_date": "2024-12-31",
+  "speaker_name": "Vaibhav Taneja",
+  "speaker_type": "Executives",
+  "transcript_id": null,
+  "component_id": null
 }
