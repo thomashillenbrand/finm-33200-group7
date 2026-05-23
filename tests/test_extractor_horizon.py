@@ -1,33 +1,56 @@
+"""Horizon-resolver tests for the claim-extraction pipeline (workstream B)."""
+
 from datetime import date
 
-from extractor.horizon import resolve_horizon
+import pytest
+
+from extractor.horizon import quarter_of, resolve_horizon
+
+# A Q1 call held in April -- the common relative-horizon anchor.
+CALL = date(2022, 4, 20)
 
 
-def test_next_quarter_q4_earnings_call():
-    # Q4 earnings call in Feb → guidance is for Q1 (Jan–Mar)
-    start, end = resolve_horizon(date(2025, 2, 6), "next_quarter")
-    assert start == date(2025, 1, 1)
-    assert end == date(2025, 3, 31)
+@pytest.mark.parametrize(
+    "raw, call_date, expected",
+    [
+        # empty / unresolvable
+        ("", CALL, ("", None)),
+        ("someday maybe", CALL, ("", None)),
+        # absolute fiscal year
+        ("full year 2024", CALL, ("FY2024", date(2024, 12, 31))),
+        ("fiscal 2025", CALL, ("FY2025", date(2025, 12, 31))),
+        ("by the end of 2025", CALL, ("FY2025", date(2025, 12, 31))),
+        # absolute quarter
+        ("Q2 2024", CALL, ("Q2 2024", date(2024, 6, 30))),
+        ("third quarter of 2023", CALL, ("Q3 2023", date(2023, 9, 30))),
+        # relative quarter (anchored on call date)
+        ("next quarter", CALL, ("Q2 2022", date(2022, 6, 30))),
+        ("this quarter", CALL, ("Q2 2022", date(2022, 6, 30))),
+        # relative year
+        ("next year", date(2022, 1, 26), ("FY2023", date(2023, 12, 31))),
+        ("the rest of the year", CALL, ("FY2022", date(2022, 12, 31))),
+        # relative multi-year
+        ("over the next three years", date(2021, 7, 26), ("FY2024", date(2024, 12, 31))),
+        # relative months
+        ("next 12 months", CALL, ("12 months", date(2023, 4, 20))),
+        # half-year
+        ("in the second half", CALL, ("H2 2022", date(2022, 12, 31))),
+        # vague
+        ("over the long term", CALL, ("long-term", None)),
+    ],
+)
+def test_resolve_horizon(raw, call_date, expected):
+    assert resolve_horizon(raw, call_date) == expected
 
 
-def test_next_quarter_q1_earnings_call():
-    # Q1 earnings call in April → guidance is for Q2 (Apr–Jun)
-    start, end = resolve_horizon(date(2024, 4, 30), "next_quarter")
-    assert start == date(2024, 4, 1)
-    assert end == date(2024, 6, 30)
+def test_quarter_of():
+    assert quarter_of(date(2022, 1, 26)) == 1
+    assert quarter_of(date(2022, 4, 20)) == 2
+    assert quarter_of(date(2022, 7, 26)) == 3
+    assert quarter_of(date(2022, 10, 19)) == 4
 
 
-def test_next_year_returns_full_calendar_year():
-    start, end = resolve_horizon(date(2024, 4, 30), "next_year")
-    assert start == date(2025, 1, 1)
-    assert end == date(2025, 12, 31)
-
-
-def test_multi_year_spans_three_years():
-    start, end = resolve_horizon(date(2023, 10, 26), "multi_year")
-    assert start == date(2024, 1, 1)
-    assert end == date(2026, 12, 31)
-
-
-def test_unspecified_returns_none():
-    assert resolve_horizon(date(2024, 1, 30), "unspecified") is None
+def test_resolve_horizon_keeps_raw_auditable():
+    """An unresolved horizon returns empty -- the caller still keeps the raw."""
+    period, end = resolve_horizon("at some point", CALL)
+    assert period == "" and end is None

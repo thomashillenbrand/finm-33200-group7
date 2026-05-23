@@ -1,18 +1,21 @@
-"""CLI: extract forward-looking claims from transcript CSV(s).
+"""CLI: extract forward-looking claims from transcript parquet file(s).
 
 Examples::
 
     # 5-call pilot on one firm
     python -m extractor.run \\
-        --input data/Transcript/Tesla_2018_2022.csv \\
+        --input Pulled_data/TSLA/transcript/TSLA_transcripts.parquet \\
         --output data/claims/pilot_claims.csv --limit 5
 
-    # full run over every transcript CSV in a directory
+    # full run over every transcript parquet under a directory
     python -m extractor.run \\
-        --input data/Transcript --output data/claims/all_claims.csv
+        --input Pulled_data --output data/claims/all_claims.csv
 
-``--input`` may be a single CSV or a directory of CSVs. ``--limit`` caps the
-number of calls processed per file (use ``--limit 5`` for the day-4 pilot).
+``--input`` may be a single transcript parquet or a directory. A directory is
+searched recursively for ``*_transcripts.parquet`` (the file ``data_pull.py``
+writes), so the metadata and Compustat parquets that share those directories
+are skipped. ``--limit`` caps the number of calls processed per file (use
+``--limit 5`` for the day-4 pilot).
 """
 
 from __future__ import annotations
@@ -29,9 +32,13 @@ from extractor.output import write_claims_csv
 
 
 def _input_files(path: Path) -> list[Path]:
-    """Resolve ``--input`` to a sorted list of CSV files."""
+    """Resolve ``--input`` to a sorted list of transcript parquet files.
+
+    A directory is searched recursively for ``*_transcripts.parquet`` so that
+    pointing ``--input`` at ``Pulled_data`` picks up every firm at once.
+    """
     if path.is_dir():
-        return sorted(path.glob("*.csv"))
+        return sorted(path.rglob("*_transcripts.parquet"))
     return [path]
 
 
@@ -39,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="extractor.run", description=__doc__)
     parser.add_argument(
         "--input", required=True, type=Path,
-        help="Transcript CSV file or a directory of transcript CSVs.",
+        help="Transcript parquet, or a directory searched for *_transcripts.parquet.",
     )
     parser.add_argument(
         "--output", required=True, type=Path,
@@ -59,12 +66,12 @@ def main(argv: list[str] | None = None) -> int:
 
     files = _input_files(args.input)
     if not files:
-        print(f"No CSV files found at {args.input}", file=sys.stderr)
+        print(f"No transcript parquet files found at {args.input}", file=sys.stderr)
         return 1
 
     all_claims = []
-    for csv_file in files:
-        print(f"\n=== {csv_file.name} ===")
+    for parquet_file in files:
+        print(f"\n=== {parquet_file.name} ===")
 
         def _report(call, claims):
             print(
@@ -73,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         claims = extract_transcript(
-            csv_file, limit=args.limit, model_name=args.model, on_call=_report
+            parquet_file, limit=args.limit, model_name=args.model, on_call=_report
         )
         print(f"  subtotal: {len(claims)} claims")
         all_claims.extend(claims)

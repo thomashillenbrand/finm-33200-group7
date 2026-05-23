@@ -4,8 +4,12 @@ Per the workstream-B design decisions:
   - LLM: OpenAI mini tier (default ``openai:gpt-4o-mini``), matching the
     verification agent's model choice.
   - Input unit: per call -- one structured-output request per earnings call.
-  - Schema: lightweight (type + verbatim quote + summary + horizon).
+  - Schema: lightweight (type + verbatim quote + summary + horizon), two claim
+    types -- ``numerical_guidance`` and ``capital_allocation``.
   - Horizons: resolved to absolute dates *and* kept raw.
+  - Scope: numerical guidance must state a specific figure -- a directional-only
+    guidance claim is dropped by ``filter_unquantified_guidance``;
+    ``capital_allocation`` claims are kept regardless.
 
 Structured output is enforced with LangChain's ``.with_structured_output()``
 against ``ExtractionResponse`` -- the same pattern the verifier uses.
@@ -13,6 +17,8 @@ against ``ExtractionResponse`` -- the same pattern the verifier uses.
 
 from __future__ import annotations
 
+import difflib
+import re
 from collections.abc import Callable
 from datetime import datetime, timezone
 
@@ -37,6 +43,21 @@ MODEL_NAME = "openai:gpt-4o-mini"
 # and must run at the model default. Matched as a prefix against the model name
 # with any "provider:" prefix stripped.
 _NO_TEMPERATURE_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+
+# Digit patterns that are labels, not financial figures: calendar years,
+# quarter tags (Q1-Q4), SEC form names (10-K, 10-Q, 8-K, 20-F), and
+# product/model designations such as "Model 3".
+_NON_FIGURE_DIGITS = re.compile(
+    r"\b(?:19|20)\d{2}\b"          # calendar years
+    r"|\bQ[1-4]\b"                 # quarter labels
+    r"|\b\d{1,2}-[KQF]\b"          # SEC form names (10-K, 10-Q, 8-K, 20-F)
+    r"|\bmodel\s+\w+",             # product / model designations
+    re.IGNORECASE,
+)
+
+# Minimum SequenceMatcher ratio for two same-turn quotes to count as the same
+# claim in ``dedupe_similar_claims``.
+_SIMILAR_QUOTE_THRESHOLD = 0.88
 
 
 def _supports_temperature(model_name: str) -> bool:
@@ -100,6 +121,39 @@ def _enrich(
     )
 
 
+def _has_number(text: str) -> bool:
+    """True if ``text`` contains a digit that could be a financial figure.
+
+    Digits that are really labels -- calendar years, quarter tags like 'Q4',
+    SEC form names like '10-K', and product designations like 'Model 3' -- are
+    stripped first so they are not mistaken for a quantitative figure (pilot
+    false positives: claims survived only because they mentioned "Model 3" or
+    "the 10-K").
+    """
+    stripped = _NON_FIGURE_DIGITS.sub("", text)
+    return bool(re.search(r"\d", stripped))
+
+
+def filter_unquantified_guidance(claims: list[Claim]) -> list[Claim]:
+    """Drop ``numerical_guidance`` claims that state no specific figure.
+
+    Per the workstream-B scope decision, numerical guidance is graded against
+    Compustat line items, so a guidance claim with no number, percentage, or
+    dollar amount cannot be verified -- it is dropped here as a deterministic
+    safety net behind the prompt. ``capital_allocation`` claims are always
+    kept: an announced program or committed action is verifiable against a
+    subsequent 8-K or 10-Q even when no figure is stated.
+    """
+    kept: list[Claim] = []
+    for claim in claims:
+        if claim.claim_type == "numerical_guidance" and not _has_number(
+            claim.verbatim_quote
+        ):
+            continue
+        kept.append(claim)
+    return kept
+
+
 def dedupe_claims(claims: list[Claim]) -> list[Claim]:
     """Drop exact-duplicate claims, keeping the first occurrence of each.
 
@@ -119,6 +173,44 @@ def dedupe_claims(claims: list[Claim]) -> list[Claim]:
     return unique
 
 
+def _quote_key(quote: str) -> str:
+    """Whitespace-normalised, lowercased quote for similarity comparison."""
+    return " ".join(quote.split()).lower()
+
+
+def dedupe_similar_claims(claims: list[Claim]) -> list[Claim]:
+    """Drop near-duplicate claims emitted twice from the same source turn.
+
+    ``dedupe_claims`` removes only exact ``claim_id`` collisions. The model
+    sometimes emits the same claim twice from one turn with slightly different
+    verbatim wording -- a different quote, hence a different ``claim_id`` --
+    which that pass cannot catch (a pilot showed two copies of one claim
+    surviving). This pass drops a claim when an earlier kept claim shares its
+    *located* source turn and claim type and has a near-identical quote.
+    Claims from different turns, and unlocated claims (``component_id`` 0), are
+    never merged.
+    """
+    kept: list[Claim] = []
+    for claim in claims:
+        key = _quote_key(claim.verbatim_quote)
+        is_dup = False
+        for earlier in kept:
+            if (
+                earlier.component_id != 0
+                and earlier.component_id == claim.component_id
+                and earlier.claim_type == claim.claim_type
+            ):
+                ratio = difflib.SequenceMatcher(
+                    None, _quote_key(earlier.verbatim_quote), key
+                ).ratio()
+                if ratio >= _SIMILAR_QUOTE_THRESHOLD:
+                    is_dup = True
+                    break
+        if not is_dup:
+            kept.append(claim)
+    return kept
+
+
 def extract_call(
     call: EarningsCall,
     extractor=None,
@@ -127,9 +219,11 @@ def extract_call(
 ) -> list[Claim]:
     """Extract claims from one earnings call.
 
-    Returns ``[]`` if the call has no management turns; exact-duplicate claims
-    are removed. Pass a pre-built ``extractor`` (from ``build_extractor``) to
-    avoid re-creating the client when processing many calls.
+    Returns ``[]`` if the call has no management turns. Numerical-guidance
+    claims with no stated figure are dropped, then exact-duplicate and
+    same-turn near-duplicate claims are removed. Pass a pre-built ``extractor``
+    (from ``build_extractor``) to avoid re-creating the client when processing
+    many calls.
     """
     if not call.management_turns():
         return []
@@ -149,27 +243,30 @@ def extract_call(
 
     extracted_at = datetime.now(timezone.utc)
     claims = [_enrich(ec, call, model_name, extracted_at) for ec in response.claims]
-    return dedupe_claims(claims)
+    claims = filter_unquantified_guidance(claims)
+    claims = dedupe_claims(claims)
+    claims = dedupe_similar_claims(claims)
+    return claims
 
 
 def extract_transcript(
-    csv_path,
+    parquet_path,
     *,
     limit: int | None = None,
     model_name: str = MODEL_NAME,
     on_call: Callable[[EarningsCall, list[Claim]], None] | None = None,
 ) -> list[Claim]:
-    """Extract claims from every call in a transcript CSV.
+    """Extract claims from every call in a transcript parquet.
 
     Args:
-        csv_path: Path to a transcript CSV.
+        parquet_path: Path to a transcript parquet (one firm's calls).
         limit: If set, only process the first ``limit`` calls (by call date).
             Use ``limit=5`` for the day-4 pilot.
         model_name: Chat model identifier for ``init_chat_model``.
         on_call: Optional callback invoked after each call with
             ``(call, claims_from_that_call)`` -- handy for progress reporting.
     """
-    calls = load_calls(csv_path)
+    calls = load_calls(parquet_path)
     if limit is not None:
         calls = calls[:limit]
 

@@ -35,16 +35,17 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
-# Five claim types. ``numerical_guidance`` is graded against Compustat; the four
-# capital-allocation types are graded against subsequent 10-Q/10-K/8-K filings.
-ClaimType = Literal["numerical_guidance", "buyback", "dividend", "capex", "debt"]
+# Two claim types. ``numerical_guidance`` is graded against Compustat;
+# ``capital_allocation`` (share buybacks, dividends, capex, and debt actions) is
+# graded against subsequent 10-Q/10-K/8-K filings. The four capital-allocation
+# sub-kinds are deliberately not separate types -- the pilot showed the model
+# misclassifies between them, and the two-way split is the only distinction the
+# verification stage needs (Compustat vs. SEC filings).
+ClaimType = Literal["numerical_guidance", "capital_allocation"]
 
 CLAIM_TYPES: tuple[str, ...] = (
     "numerical_guidance",
-    "buyback",
-    "dividend",
-    "capex",
-    "debt",
+    "capital_allocation",
 )
 
 
@@ -60,7 +61,7 @@ class ExtractedClaim(BaseModel):
     """
 
     claim_type: ClaimType = Field(
-        description="One of: numerical_guidance, buyback, dividend, capex, debt.",
+        description="One of: numerical_guidance, capital_allocation.",
     )
     verbatim_quote: str = Field(
         min_length=1,

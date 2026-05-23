@@ -1,51 +1,62 @@
-import pandas as pd
+"""Quote back-matching tests for the claim-extraction pipeline (workstream B)."""
 
-from extractor.provenance import find_speaker, is_management_speaker
-
-
-@staticmethod
-def _make_df():
-    return pd.DataFrame({
-        "transcriptid": [1, 1, 1],
-        "componentorder": [1, 2, 3],
-        "transcriptpersonname": ["CEO", "CFO", "Analyst"],
-        "speakertypename": ["Corporate Participant", "Corporate Participant", "Analyst"],
-        "componenttext": [
-            "We expect Q1 revenue between $24 and $25 billion.",
-            "Capital expenditure will be approximately $10 billion.",
-            "Can you elaborate on your margin outlook?",
-        ],
-    })
+from extractor.provenance import locate_quote
+from extractor.reader import Turn
 
 
-def test_find_speaker_exact_match():
-    df = _make_df()
-    result = find_speaker("We expect Q1 revenue between $24 and $25 billion.", df)
-    assert result["speaker"] == "CEO"
-    assert result["speaker_type"] == "Corporate Participant"
+def _turn(component_id: int, text: str) -> Turn:
+    return Turn(
+        component_id=component_id,
+        component_order=component_id,
+        component_type="Answer",
+        speaker_name="Exec",
+        speaker_type="Executives",
+        text=text,
+    )
 
 
-def test_find_speaker_partial_match():
-    df = _make_df()
-    result = find_speaker("Capital expenditure will be approximately $10 billion.", df)
-    assert result["speaker"] == "CFO"
+TURNS = [
+    _turn(10, "Thanks for the question. We are very pleased with progress."),
+    _turn(11, "We expect full year 2024 revenue to grow about ten percent, "
+              "driven by strong demand."),
+    _turn(12, "On capital allocation, we plan to repurchase shares next year."),
+]
 
 
-def test_find_speaker_no_match_returns_none():
-    df = _make_df()
-    result = find_speaker("This text does not appear anywhere in the transcript.", df)
-    assert result["speaker"] is None
-    assert result["speaker_type"] is None
-    assert result["component_order"] is None
+def test_exact_match():
+    m = locate_quote(TURNS, "We expect full year 2024 revenue to grow about ten percent")
+    assert m.method == "exact"
+    assert m.verbatim is True
+    assert m.turn.component_id == 11
 
 
-def test_is_management_speaker_corporate():
-    assert is_management_speaker("Corporate Participant") is True
+def test_exact_match_ignores_whitespace_and_case():
+    m = locate_quote(TURNS, "  we EXPECT full year 2024   revenue to grow  ")
+    assert m.method == "exact"
+    assert m.verbatim is True
+    assert m.turn.component_id == 11
 
 
-def test_is_management_speaker_analyst():
-    assert is_management_speaker("Analyst") is False
+def test_fuzzy_match_for_lightly_paraphrased_quote():
+    # Most of the quote is a contiguous run of turn 11, with a garbled tail --
+    # the failure mode the pilot exposed.
+    m = locate_quote(
+        TURNS,
+        "We expect full year 2024 revenue to grow about ten percent in sight",
+    )
+    assert m.method == "fuzzy"
+    assert m.verbatim is False
+    assert m.turn.component_id == 11
 
 
-def test_is_management_speaker_none():
-    assert is_management_speaker(None) is False
+def test_unmatched_quote_returns_no_turn():
+    m = locate_quote(TURNS, "Our mascot won the regional pie eating contest on Tuesday.")
+    assert m.method == "unmatched"
+    assert m.verbatim is False
+    assert m.turn is None
+
+
+def test_empty_quote_is_unmatched():
+    m = locate_quote(TURNS, "   ")
+    assert m.method == "unmatched"
+    assert m.turn is None
