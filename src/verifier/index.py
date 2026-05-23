@@ -9,8 +9,19 @@ Public surface:
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import shutil
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
+
+import faiss
+import numpy as np
+import pandas as pd
+import tiktoken
+from bs4 import BeautifulSoup
+from langchain_openai import OpenAIEmbeddings
 
 
 class IndexNotBuiltError(Exception):
@@ -31,9 +42,6 @@ def chunk_id(accession_no: str, char_start: int, char_end: int) -> str:
         f"{accession_no}:{char_start}-{char_end}".encode("utf-8")
     ).hexdigest()
     return digest[:16]
-
-import tiktoken
-from bs4 import BeautifulSoup
 
 
 @dataclass(frozen=True)
@@ -120,16 +128,6 @@ def chunk_text(
         start += step
     return chunks
 
-
-import os
-import shutil
-import tempfile
-from pathlib import Path
-
-import faiss
-import numpy as np
-import pandas as pd
-from langchain_openai import OpenAIEmbeddings
 
 # Repo-relative default; tests monkeypatch this.
 PULLED_DATA_ROOT = Path("pulled_data")
