@@ -177,6 +177,70 @@ The CLI loads `OPENAI_API_KEY` from `.env` automatically. Each run prints a
 per-call claim count and a summary (type breakdown, provenance split, horizon
 resolution) and writes one row per claim to the output CSV in `data/claims/`.
 
+## Verification — iter-2 real EDGAR retrieval (workstream C)
+
+Iter-1 ran the agent against canned excerpts. Iter-2 runs it against the four
+firms' actual SEC filings via a local FAISS index, with the load-bearing
+labeling guarantee preserved: in `--mode evidence` the agent returns cited
+excerpts without proposing a verdict.
+
+### Prerequisites
+
+Pull SEC filings + Compustat for the four firms (one-time, ~10–30 min total):
+
+```bash
+mamba run -n truth python -m data_pull TSLA --start 2018-01-01
+mamba run -n truth python -m data_pull AMZN --start 2018-01-01
+mamba run -n truth python -m data_pull KO   --start 2018-01-01
+mamba run -n truth python -m data_pull LLY  --start 2018-01-01
+```
+
+Output lives under `pulled_data/<TICKER>/` (gitignored).
+
+### Build the search indexes
+
+```bash
+mamba run -n truth python -m verifier.index --all          # all four tickers
+mamba run -n truth python -m verifier.index TSLA           # one ticker
+mamba run -n truth python -m verifier.index TSLA --refresh # full rebuild
+```
+
+Output: `pulled_data/<TICKER>/index/chunks.parquet` and `faiss.index`.
+Idempotent — re-running on an unchanged corpus is a no-op (only new accession
+numbers get re-embedded).
+
+### Run the verifier
+
+```bash
+mamba run -n truth python -m verifier.run --claim path/to/claim.json --mode evidence
+mamba run -n truth python -m verifier.run --claim path/to/claim.json --mode verdict
+mamba run -n truth python -m verifier.run --claim path/to/claim.json --mode evidence --no-cache
+```
+
+Each run also writes a structured trace (`.json` + human-readable `.md`) under
+`data/traces/`.
+
+### Caching
+
+Two layers:
+
+- **Document embeddings** — persisted in `pulled_data/<TICKER>/index/faiss.index`
+  and `chunks.parquet`. Incremental: re-running the indexer only embeds
+  accession numbers absent from the existing index.
+- **Chat completions** — SQLite-cached at `pulled_data/.cache/llm_cache.sqlite`
+  via `langchain_community.cache.SQLiteCache`. **On by default.** Pass
+  `--no-cache` on the CLI to bypass for a single run.
+
+Query embeddings (one per `search_filings` call) are not separately cached;
+they're recomputed each time. This is a known iter-3 backlog item — see
+`docs/future_optimizations.md`.
+
+### Scope
+
+Iter-2 verifies **`capital_allocation` claims only**. A `numerical_guidance`
+claim raises `UnsupportedClaimTypeError`; Compustat-backed numeric verification
+lands in iter 3.
+
 ## Adding or updating dependencies
 
 `pyproject.toml` is the source of truth. After editing `[project.dependencies]`:
