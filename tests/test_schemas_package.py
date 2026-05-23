@@ -39,9 +39,11 @@ def _sample_claim_kwargs(**overrides):
         "company": "Amazon.com, Inc.",
         "fiscal_period": "Q4 2023",
         "source_call": "Amazon Q4 2023 Earnings Call",
-        "claim_type": "buyback",
+        "claim_type": "capital_allocation",
         "verbatim_quote": "We expect to repurchase approximately $5 billion in 2024.",
         "summary": "Management plans ~$5B buyback in 2024.",
+        "transcript_id": 1234567,
+        "component_id": 89012345,
     }
     base.update(overrides)
     return base
@@ -51,12 +53,18 @@ def test_claim_constructs_with_required_fields():
     c = Claim(**_sample_claim_kwargs())
     assert c.ticker == "AMZN"
     assert c.call_date == date(2024, 2, 1)
-    assert c.claim_type == "buyback"
+    assert c.claim_type == "capital_allocation"
 
 
 def test_claim_rejects_unknown_claim_type():
     with pytest.raises(ValidationError):
         Claim(**_sample_claim_kwargs(claim_type="something_else"))
+
+
+def test_claim_rejects_retired_subtype():
+    """buyback/dividend/capex/debt collapsed into capital_allocation in v4."""
+    with pytest.raises(ValidationError):
+        Claim(**_sample_claim_kwargs(claim_type="buyback"))
 
 
 def test_claim_resolves_horizon_end_date_from_iso():

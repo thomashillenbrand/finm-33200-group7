@@ -8,7 +8,7 @@ same source turn.
 from datetime import date
 
 from extractor.extract import dedupe_claims, dedupe_similar_claims
-from extractor.schema import Claim
+from schemas import Claim
 
 
 def _claim(

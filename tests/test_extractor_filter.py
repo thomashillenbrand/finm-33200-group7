@@ -8,7 +8,7 @@ amount is given.
 from datetime import date
 
 from extractor.extract import filter_unquantified_guidance
-from extractor.schema import Claim
+from schemas import Claim
 
 
 def _claim(claim_type: str, quote: str) -> Claim:

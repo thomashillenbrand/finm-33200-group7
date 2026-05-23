@@ -5,7 +5,7 @@ from datetime import date, datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from extractor.schema import (
+from schemas import (
     CLAIM_TYPES,
     CSV_FIELDS,
     Claim,

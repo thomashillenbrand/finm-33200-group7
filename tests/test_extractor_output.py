@@ -4,7 +4,7 @@ import csv
 from datetime import date, datetime, timezone
 
 from extractor.output import write_claims_csv
-from extractor.schema import CSV_FIELDS, Claim
+from schemas import CSV_FIELDS, Claim
 
 
 def _claim(**overrides) -> Claim:

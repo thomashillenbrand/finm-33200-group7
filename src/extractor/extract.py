@@ -28,7 +28,7 @@ from extractor.horizon import resolve_horizon
 from extractor.prompt import PROMPT_VERSION, SYSTEM_PROMPT, build_user_prompt
 from extractor.provenance import locate_quote
 from extractor.reader import EarningsCall, build_call_input, load_calls
-from extractor.schema import (
+from schemas import (
     Claim,
     ExtractedClaim,
     ExtractionResponse,

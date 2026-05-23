@@ -22,9 +22,11 @@ def _claim_kwargs(**overrides):
         "company": "Tesla, Inc.",
         "fiscal_period": "Q4 2023",
         "source_call": "Tesla Q4 2023 Earnings Call",
-        "claim_type": "capex",
+        "claim_type": "capital_allocation",
         "verbatim_quote": "We expect capex above $10B in 2024.",
         "summary": "Management expects 2024 capex above $10B.",
+        "transcript_id": 1382970,
+        "component_id": 55282263,
     }
     base.update(overrides)
     return base

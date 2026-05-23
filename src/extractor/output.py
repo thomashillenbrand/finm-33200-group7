@@ -11,7 +11,7 @@ from collections.abc import Iterable
 from datetime import date, datetime
 from pathlib import Path
 
-from extractor.schema import CSV_FIELDS, Claim
+from schemas import CSV_FIELDS, Claim
 
 
 def _cell(value) -> str:
