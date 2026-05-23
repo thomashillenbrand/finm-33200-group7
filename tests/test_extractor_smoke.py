@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from extractor.reader import EarningsCall, Turn
-from extractor.schema import CLAIM_TYPES, Claim
+from schemas import CLAIM_TYPES, Claim
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("OPENAI_API_KEY"),

@@ -17,7 +17,7 @@ from extractor.horizon import resolve_horizon
 from extractor.output import write_claims_csv
 from extractor.provenance import QuoteMatch, locate_quote
 from extractor.reader import EarningsCall, Turn, build_call_input, load_calls
-from extractor.schema import (
+from schemas import (
     CSV_FIELDS,
     Claim,
     ClaimType,

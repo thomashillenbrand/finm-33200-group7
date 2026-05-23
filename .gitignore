@@ -225,7 +225,7 @@ __marimo__/
 data/traces/
 
 # Raw data pulled from WRDS/EDGAR (regenerate with pull_data.py)
-Pulled_data/
+pulled_data/
 
 # Extraction run outputs (large, generated artifacts)
 data/extraction_runs/

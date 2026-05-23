@@ -1,0 +1,16 @@
+{
+  "claim_id": "TSLA_20200129_87696b9b",
+  "ticker": "TSLA",
+  "call_date": "2020-01-29",
+  "company": "Tesla, Inc.",
+  "fiscal_period": "Q4 2019",
+  "source_call": "Tesla, Inc., Q4 2019 Earnings Call, Jan 29, 2020",
+  "claim_type": "capital_allocation",
+  "verbatim_quote": "we expect to have completed the majority of planned supply chain localization at the factory or in the region",
+  "summary": "Management expects to complete most of the planned supply chain localization for the Shanghai factory in 2020.",
+  "horizon_raw": "this year",
+  "horizon_period": "FY2020",
+  "horizon_end_date": "2020-12-31",
+  "transcript_id": 1898027,
+  "component_id": 74420392
+}

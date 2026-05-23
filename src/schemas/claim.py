@@ -1,30 +1,11 @@
-"""Typed claim schema for the extraction pipeline (workstream B).
+"""Claim schema -- the row contract between extraction (workstream B),
+verification (workstream C), and labeling (workstream D).
 
-Workstream B extracts forward-looking management claims from earnings call
-transcripts and writes them to a CSV that workstream C (verification) and
-workstream D (labeling) consume.
-
-Two model layers:
-  - ``ExtractedClaim`` / ``ExtractionResponse`` -- the raw structured output the
-    LLM returns for one call. Deliberately minimal: only what the model must
-    read from the transcript and decide.
-  - ``Claim`` -- the enriched record written to the output CSV. Adds firm/call
-    provenance, resolved horizon dates, and run metadata that ``extractor``
-    fills in deterministically (no model tokens, no hallucination risk).
-
-By design, no field on any of these models expresses a verdict, an outcome, or
-a judgment on whether a claim came true. The extractor surfaces claims; the
-verification agent surfaces evidence; human labelers assign verdicts. Keeping
-outcome language out of B's schema protects that separation (see CLAUDE.md --
-the labeling workflow is load-bearing).
-
-``Claim`` reduces cleanly to ``verifier.schema.Claim`` at the seam::
-
-    verifier.schema.Claim(
-        ticker=claim.ticker,
-        call_date=claim.call_date,
-        text=claim.verbatim_quote,
-    )
+By design, no field expresses a verdict, an outcome, or a judgment on whether
+a claim came true. The extractor surfaces claims; the verification agent
+surfaces evidence; human labelers assign verdicts. Keeping outcome language
+out of the schema protects that separation (see CLAUDE.md -- the labeling
+workflow is load-bearing).
 """
 
 from __future__ import annotations
@@ -47,40 +28,6 @@ CLAIM_TYPES: tuple[str, ...] = (
     "numerical_guidance",
     "capital_allocation",
 )
-
-
-class ExtractedClaim(BaseModel):
-    """One forward-looking claim, as returned by the LLM for a single call.
-
-    Every field here is something the model must read from the transcript and
-    decide. The source turn is *not* asked of the model -- the pilot showed
-    model-reported ids are unreliable -- it is recovered afterwards by matching
-    ``verbatim_quote`` back to a turn (see ``extractor.provenance``). Resolved
-    dates and run metadata are likewise added deterministically by
-    ``extractor.extract``.
-    """
-
-    claim_type: ClaimType = Field(
-        description="One of: numerical_guidance, capital_allocation.",
-    )
-    verbatim_quote: str = Field(
-        min_length=1,
-        description="Exact substring of the transcript stating the claim.",
-    )
-    summary: str = Field(
-        min_length=1,
-        description="One plain sentence paraphrasing what is being claimed.",
-    )
-    horizon_raw: str = Field(
-        default="",
-        description="Exact wording of the claim's time horizon, or '' if none stated.",
-    )
-
-
-class ExtractionResponse(BaseModel):
-    """Structured-output wrapper: all claims the LLM found in one call."""
-
-    claims: list[ExtractedClaim] = Field(default_factory=list)
 
 
 class Claim(BaseModel):

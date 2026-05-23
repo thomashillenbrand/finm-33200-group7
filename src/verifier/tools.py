@@ -1,47 +1,60 @@
-"""Agent-facing tools.
+"""Per-claim search_filings closure.
 
-Iteration 1 ships one stubbed tool. The signature mirrors what the real
-EDGAR-backed version will need, so iteration 2 swaps the body, not the
-interface.
-
-Note for human readers: the function docstring for `search_filings` is
-LLM-facing and is kept aspirational — it documents the filter parameters
-(after_date, before_date, forms) as if they work. In iteration 1 the body
-*accepts but ignores* those filters. This is deliberate: the agent's
-tool-call traces should show it reasoning about ticker, dates, and forms
-even before real filtering is wired in, so we know it's targeting the
-right filings when iteration 2 lands.
+The bound tool's LLM-visible signature contains only `query`, `before_date`,
+and `forms`. `ticker` and `after_date` are closed over in the factory so the
+LLM can never widen them backwards.
 """
 
 from __future__ import annotations
 
 from datetime import date
 
-from verifier.corpus import load_stub_excerpts
+from langchain_core.tools import tool
+
+from schemas import EvidenceItem
+from verifier.corpus import SearchIndex
 
 
-def search_filings(
-    query: str,
-    ticker: str,
-    after_date: date | None = None,
-    before_date: date | None = None,
-    forms: list[str] | None = None,
-) -> str:
-    """Search a firm's SEC filings for evidence about a claim.
+def _stringify_evidence(items: list[EvidenceItem]) -> str:
+    """Render a list of evidence items into the string the LLM sees."""
+    if not items:
+        return "[no matching filings]"
+    parts: list[str] = []
+    for it in items:
+        header = f"[{it.source}] (score {it.score:.2f})"
+        parts.append(f"{header}\n{it.excerpt}")
+    return "\n\n---\n\n".join(parts)
 
-    Args:
-        query: Free-form text describing what to look for. Examples:
-            "2024 production growth vs 50% target", "buyback execution Q2 2024".
-        ticker: The firm's ticker (e.g. "TSLA").
-        after_date: Only consider filings on or after this date.
-        before_date: Only consider filings on or before this date.
-        forms: Restrict to these filing forms (e.g. ["10-Q", "8-K"]). None = any.
 
-    Returns:
-        Matching excerpts with source citations, joined into one string.
+def bind_search_filings(ticker: str, after_date: date):
+    """Return a LangChain `@tool`-decorated closure for one claim.
+
+    Closing over `(ticker, after_date)` means the LLM cannot pass either as a
+    tool argument — they're not in the visible signature. This is the
+    load-bearing no-time-leakage guarantee.
     """
-    # Iteration 1: ignore filter args, return all canned excerpts.
-    # Note: load_stub_excerpts() returns a list of EvidenceItem objects,
-    # so access .source and .excerpt as attributes (not dict keys).
-    excerpts = load_stub_excerpts()
-    return "\n\n---\n\n".join(f"[{e.source}]\n{e.excerpt}" for e in excerpts)
+    index = SearchIndex.load(ticker)
+
+    @tool
+    def search_filings(
+        query: str,
+        before_date: date | None = None,
+        forms: list[str] | None = None,
+    ) -> str:
+        """Search this firm's SEC filings for evidence about a claim.
+
+        Args:
+            query: Free-form text describing what to look for. Examples:
+                "share repurchase amount Q1 2024", "capex 2024 actual spend".
+            before_date: Optional upper bound on filing date (inclusive).
+            forms: Optional restriction to filing forms (e.g. ["10-Q", "8-K"]).
+
+        Returns:
+            Up to 8 matching excerpts, each preceded by a bracketed
+            `[form filed YYYY-MM-DD, accession ...]` header.
+        """
+        items = index.query(query, after_date=after_date,
+                            before_date=before_date, forms=forms, k=8)
+        return _stringify_evidence(items)
+
+    return search_filings
