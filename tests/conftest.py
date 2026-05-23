@@ -1,0 +1,58 @@
+"""Shared pytest fixtures.
+
+The `mock_embeddings` fixture replaces the real OpenAI embeddings client with
+a deterministic numpy-based stand-in for every test that depends on it.
+Keeps offline tests fast and free. Live tests opt in by skipping this
+fixture (or by running with `-m live` and a real OPENAI_API_KEY).
+"""
+
+from __future__ import annotations
+
+import hashlib
+
+import numpy as np
+import pytest
+
+
+class _MockEmbeddings:
+    """Deterministic embeddings: hash → 384-dim float32 unit vector.
+
+    Two distinct strings map to two different vectors. Identical strings map
+    to identical vectors (so caching tests are meaningful).
+    """
+
+    dim = 384
+
+    def __init__(self) -> None:
+        self.embed_documents_calls = 0
+        self.embed_query_calls = 0
+
+    def _vec(self, s: str) -> np.ndarray:
+        h = hashlib.sha256(s.encode("utf-8")).digest()
+        # Stretch 32 hash bytes into `dim` floats via a repeating cycle.
+        reps = (self.dim // 32) + 1
+        raw = np.frombuffer((h * reps)[: self.dim * 4], dtype=np.uint32)
+        v = raw.astype(np.float32) / np.float32(np.iinfo(np.uint32).max)
+        v -= 0.5
+        norm = np.linalg.norm(v)
+        return v / norm if norm else v
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        self.embed_documents_calls += 1
+        return [self._vec(t).tolist() for t in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        self.embed_query_calls += 1
+        return self._vec(text).tolist()
+
+
+@pytest.fixture
+def mock_embeddings(monkeypatch):
+    """Replace `verifier.index._make_embeddings_client` with the mock."""
+    from verifier import index
+
+    mock = _MockEmbeddings()
+    monkeypatch.setattr(index, "_make_embeddings_client", lambda: mock)
+    # Also patch the corpus module's factory once Task 14 lands; it imports
+    # from the same module so the same monkeypatch covers both.
+    return mock

@@ -115,3 +115,140 @@ def test_custom_exceptions_are_distinct_value_subclasses():
     assert issubclass(IndexNotBuiltError, Exception)
     assert issubclass(IndexCorruptError, Exception)
     assert IndexNotBuiltError is not IndexCorruptError
+
+
+# --- build_index -----------------------------------------------------------
+
+import shutil
+from pathlib import Path
+
+import faiss
+import numpy as np
+import pandas as pd
+import pytest
+
+from verifier.index import build_index
+
+
+@pytest.fixture
+def ticker_root(tmp_path):
+    """Set up a tmp `pulled_data/MINI/` layout from the fixture filings."""
+    src_dir = Path(__file__).parent / "fixtures" / "mini_filings"
+    ticker_dir = tmp_path / "pulled_data" / "MINI"
+    sec_dir = ticker_dir / "SEC"
+    sec_dir.mkdir(parents=True)
+    # Copy HTMLs into SEC/.
+    for f in ["sample_10K.htm", "sample_10Q.htm", "sample_8K.htm"]:
+        shutil.copy(src_dir / f, sec_dir / f)
+    # Copy the index parquet to where build_index expects it:
+    #   pulled_data/<TICKER>/<TICKER>_sec_filings_index.parquet
+    shutil.copy(
+        src_dir / "sec_filings_index.parquet",
+        ticker_dir / "MINI_sec_filings_index.parquet",
+    )
+    # Patch the package-level PULLED_DATA_ROOT to our tmp.
+    import verifier.index as idx
+    old = idx.PULLED_DATA_ROOT
+    idx.PULLED_DATA_ROOT = tmp_path / "pulled_data"
+    yield ticker_dir
+    idx.PULLED_DATA_ROOT = old
+
+
+def test_build_index_writes_chunks_parquet_and_faiss(ticker_root, mock_embeddings):
+    build_index("MINI")
+    chunks_path = ticker_root / "index" / "chunks.parquet"
+    faiss_path = ticker_root / "index" / "faiss.index"
+    assert chunks_path.exists()
+    assert faiss_path.exists()
+    df = pd.read_parquet(chunks_path)
+    # Every fixture filing contributes ≥1 chunk; expect ≥3 rows total.
+    assert len(df) >= 3
+    # Required columns:
+    for col in ("chunk_id", "accession_no", "form", "filing_date",
+                "local_path", "char_start", "char_end", "text"):
+        assert col in df.columns
+
+
+def test_build_index_is_idempotent(ticker_root, mock_embeddings):
+    """Second run on unchanged corpus → zero new embedding calls."""
+    build_index("MINI")
+    first = mock_embeddings.embed_documents_calls
+    assert first >= 1
+    build_index("MINI")
+    assert mock_embeddings.embed_documents_calls == first
+
+
+def test_build_index_refresh_rebuilds_from_scratch(ticker_root, mock_embeddings):
+    build_index("MINI")
+    first_calls = mock_embeddings.embed_documents_calls
+    build_index("MINI", refresh=True)
+    # Refresh wipes; we should see at least one new embed batch.
+    assert mock_embeddings.embed_documents_calls > first_calls
+
+
+def test_build_index_raises_if_no_filings_index(tmp_path, mock_embeddings, monkeypatch):
+    import verifier.index as idx
+    monkeypatch.setattr(idx, "PULLED_DATA_ROOT", tmp_path / "pulled_data")
+    with pytest.raises(FileNotFoundError):
+        build_index("NOPE")
+
+
+def test_build_index_handles_all_non_html_corpus(tmp_path, mock_embeddings, monkeypatch):
+    """Issue 1 regression: a corpus with only non-HTML primary docs must not crash.
+    `build_index` should skip writing files (no usable chunks) and log clearly."""
+    import verifier.index as idx
+    ticker_dir = tmp_path / "pulled_data" / "NOHTML"
+    ticker_dir.mkdir(parents=True)
+    # SEC filings index points at a .pdf only — _chunk_filing returns [] for it.
+    rows = [{
+        "accessionNumber": "0000000000-99-000001",
+        "filingDate": "2024-01-15",
+        "reportDate": "2024-01-15",
+        "form": "8-K",
+        "primaryDocument": "doc.pdf",
+        "primaryDocDescription": "PDF only",
+        "localPath": "doc.pdf",
+    }]
+    pd.DataFrame(rows).to_parquet(ticker_dir / "NOHTML_sec_filings_index.parquet")
+    # The .pdf doesn't need real content — _chunk_filing skips non-html extensions
+    # before reading the file. (Touch it anyway to be safe.)
+    (ticker_dir / "SEC").mkdir()
+    (ticker_dir / "SEC" / "doc.pdf").write_bytes(b"")
+    monkeypatch.setattr(idx, "PULLED_DATA_ROOT", tmp_path / "pulled_data")
+    # Must not raise. Must not write index/.
+    build_index("NOHTML")
+    assert not (ticker_dir / "index").exists()
+
+
+def test_build_index_detects_faiss_parquet_length_mismatch(ticker_root, mock_embeddings):
+    """Issue 2 regression: chunks.parquet and faiss.index out of sync must raise
+    IndexCorruptError, not a cryptic pandas ValueError."""
+    build_index("MINI")
+    faiss_path = ticker_root / "index" / "faiss.index"
+    bogus = faiss.IndexFlatIP(384)  # mock embed dim
+    bogus.add(np.random.rand(99, 384).astype(np.float32))
+    faiss.write_index(bogus, str(faiss_path))
+    with pytest.raises(IndexCorruptError):
+        build_index("MINI")
+
+
+def test_build_index_drops_stale_chunks_from_removed_filings(ticker_root, mock_embeddings):
+    """Issue 3 regression: a chunk that's no longer in the SEC filings index must
+    not survive a subsequent build."""
+    import verifier.index as idx
+    build_index("MINI")
+    first_df = pd.read_parquet(ticker_root / "index" / "chunks.parquet")
+    accessions_before = set(first_df["accession_no"])
+    assert len(accessions_before) == 3  # 10-K, 10-Q, 8-K all present
+
+    # Rewrite the SEC index parquet to drop the 8-K.
+    sec_index_path = ticker_root / "MINI_sec_filings_index.parquet"
+    df = pd.read_parquet(sec_index_path)
+    df = df[df["form"] != "8-K"].reset_index(drop=True)
+    df.to_parquet(sec_index_path)
+
+    build_index("MINI")
+    second_df = pd.read_parquet(ticker_root / "index" / "chunks.parquet")
+    accessions_after = set(second_df["accession_no"])
+    assert "0000000000-24-000015" not in accessions_after  # 8-K dropped
+    assert len(accessions_after) == 2  # 10-K + 10-Q remain
