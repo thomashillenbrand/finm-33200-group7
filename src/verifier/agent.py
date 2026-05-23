@@ -23,6 +23,7 @@ from langchain_community.cache import SQLiteCache
 from langchain_core.globals import set_llm_cache
 
 from schemas import Claim, EvidenceBundle, Verdict
+from verifier.tools import bind_search_filings
 from verifier.trace import to_records, save_trace, print_trace
 
 _LLM_CACHE_PATH = Path("pulled_data") / ".cache" / "llm_cache.sqlite"
@@ -58,6 +59,11 @@ your excerpts; any verdict-flavored prose smuggled into them biases the label.
 Do not answer from prior knowledge. Every excerpt must come from a `search_filings` \
 result in this session.
 
+Each tool result is a list of excerpts from a single firm's SEC filings filed \
+after the call date. Cite excerpts verbatim, and include the bracketed \
+`[form filed YYYY-MM-DD, accession ...]` header from the tool result on every \
+excerpt you return.
+
 Use the `search_filings` tool to retrieve evidence. Cite the source filing on \
 every excerpt. Return only the structured `EvidenceBundle`."""
 
@@ -82,16 +88,12 @@ Return only the structured `Verdict` with cited evidence items, the verdict \
 label, and a short reasoning paragraph."""
 
 
-def build_agent(mode: Mode):
-    """Construct a deepagents agent for the given mode.
+def build_agent(mode: Mode, *, tools: list):
+    """Construct a deepagents agent for the given mode with the supplied tools.
 
-    The agent runs free-form (no `response_format`). Structured output is
-    enforced by a deterministic post-processor (`_extract_structured`) that
-    uses LangChain's `.with_structured_output()` against the schema for `mode`.
-    Two LLM calls per verification — one agent loop, one structured-output
-    extraction — which is fine for iteration-1 scaffolding cost.
-
-    Returns an object whose `.invoke({"messages": [...]})` runs the loop.
+    The mode flag swaps the system prompt and the structured-output schema.
+    Tools are passed in by `verify()` because the search tool is bound
+    per-claim (see `tools.bind_search_filings`).
     """
     if mode == "evidence":
         system_prompt = EVIDENCE_SYSTEM_PROMPT
@@ -103,7 +105,7 @@ def build_agent(mode: Mode):
     return create_deep_agent(
         model=init_chat_model(MODEL_NAME, max_retries=3, temperature=0.1),
         system_prompt=system_prompt,
-        tools=[search_filings],
+        tools=tools,
     )
 
 
@@ -156,30 +158,29 @@ def verify(
     mode: Mode = "evidence",
     *,
     trace: bool = True,
+    cache: bool = True,
 ) -> EvidenceBundle | Verdict:
     """Run the verification agent on a single claim. Returns mode-dependent output.
 
-    Return type is determined by `mode`: "evidence" → `EvidenceBundle`,
-    "verdict" → `Verdict`.
-
     Args:
-        claim: Validated `Claim` object.
+        claim: Validated `Claim` (iter-2 combined shape).
         mode: "evidence" (default; safe for labeling workflow) or "verdict".
-        trace: If True, save JSON+MD trace files to data/traces/ and print the
-            trace to stdout. Pass False for smoke tests / notebook callers.
+        trace: If True, save JSON+MD trace files to data/traces/ and print.
+        cache: If True (default), enable the SQLite chat-completion cache.
+            Pass False (or `--no-cache` from the CLI) for fresh LLM calls.
+
+    Raises:
+        UnsupportedClaimTypeError: if claim.claim_type is not a capital-
+            allocation type (iter-2 scope).
     """
-    agent = build_agent(mode)
-    user_message = (
-        f"Claim made on {claim.call_date.isoformat()} by {claim.ticker}: \"{claim.text}\"\n\n"
-        f"Use search_filings to gather evidence from filings after {claim.call_date.isoformat()}."
-    )
+    user_message = _format_claim_for_agent(claim)  # raises on unsupported types
+    _configure_cache(cache)
+    tool = bind_search_filings(claim.ticker, claim.call_date)
+    agent = build_agent(mode, tools=[tool])
     result = agent.invoke({"messages": [{"role": "user", "content": user_message}]})
 
     if trace:
         records = to_records(result["messages"])
-        # Save before print: persistence is the durable artifact; print is
-        # convenience. If print_trace errored on a malformed record, we'd lose
-        # the trace entirely.
         json_path, _md_path = save_trace(records, f"verify_{mode}")
         print(f"[trace saved] {json_path}")
         print_trace(records)
@@ -193,13 +194,14 @@ def verify_from_dict(
     mode: Mode = "evidence",
     *,
     trace: bool = True,
+    cache: bool = True,
 ) -> EvidenceBundle | Verdict:
     """Thin entry point: validate dict → Claim, then delegate to verify().
 
     Pydantic `ValidationError` on malformed input is intentionally not wrapped —
     its error structure is already readable.
     """
-    return verify(Claim(**d), mode, trace=trace)
+    return verify(Claim(**d), mode, trace=trace, cache=cache)
 
 
 from datetime import date as _date_cls
