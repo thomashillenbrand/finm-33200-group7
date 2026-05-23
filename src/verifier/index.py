@@ -99,20 +99,34 @@ def chunk_text(
     if not text:
         return []
 
-    # token-id list + char offsets, one entry per token
+    # token-id list + char offsets, one entry per token boundary
     token_ids = _ENCODER.encode(text)
     if len(token_ids) <= window_tokens:
         return [Chunk(text=text, char_start=0, char_end=len(text))]
 
-    # Build per-token char-start offsets by decoding incrementally. We accept
-    # the O(n) cost — corpora are small per ticker, and tiktoken is fast.
+    # Build per-token-boundary char-start offsets in O(n_tokens + n_chars).
+    # Per-token *byte* lengths come from tiktoken in O(1) each; converting byte
+    # offsets to char offsets needs one parallel walk over the source text.
+    # For ASCII filings (the SEC case) char_pos == byte_pos throughout, so the
+    # walk is straight-line work.
+    token_byte_lens = [
+        len(_ENCODER.decode_single_token_bytes(t)) for t in token_ids
+    ]
     offsets: list[int] = [0]
-    cursor = 0
-    for i in range(1, len(token_ids)):
-        cursor = len(_ENCODER.decode(token_ids[:i]))
-        offsets.append(cursor)
-    # final offset = full string length
-    offsets.append(len(text))
+    byte_pos = 0
+    char_pos = 0
+    n_text = len(text)
+    target_byte = 0
+    for tok_len in token_byte_lens:
+        target_byte += tok_len
+        while byte_pos < target_byte and char_pos < n_text:
+            byte_pos += len(text[char_pos].encode("utf-8"))
+            char_pos += 1
+        offsets.append(char_pos)
+    # Final offset is len(text) by construction (round-trip), but force it in
+    # case rounding above left us one short due to a token boundary inside a
+    # multi-byte char.
+    offsets[-1] = n_text
 
     chunks: list[Chunk] = []
     step = window_tokens - overlap_tokens

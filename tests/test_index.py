@@ -52,6 +52,21 @@ def test_chunker_rejects_overlap_geq_window():
         chunk_text("x", window_tokens=100, overlap_tokens=150)
 
 
+def test_chunker_is_subquadratic_on_realistic_filing_size():
+    """Regression guard: a SEC 10-K can be ~50k tokens. The original O(n^2)
+    offset-construction loop made TSLA's index build run for >14 minutes on
+    CPU. The current O(n) implementation must finish a 20k-token chunk in well
+    under a second."""
+    import time
+
+    text = "lorem ipsum dolor sit amet " * 4000   # ~20k tokens
+    t0 = time.time()
+    chunks = chunk_text(text, window_tokens=600, overlap_tokens=100)
+    elapsed = time.time() - t0
+    assert len(chunks) > 30
+    assert elapsed < 1.0, f"chunk_text took {elapsed:.2f}s — likely O(n^2) regression"
+
+
 # --- HTML extraction -------------------------------------------------------
 
 from pathlib import Path
