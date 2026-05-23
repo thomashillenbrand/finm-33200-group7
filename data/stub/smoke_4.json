@@ -1,0 +1,16 @@
+{
+  "claim_id": "TSLA_20200429_eea88d44",
+  "ticker": "TSLA",
+  "call_date": "2020-04-29",
+  "company": "Tesla, Inc.",
+  "fiscal_period": "Q1 2020",
+  "source_call": "Tesla, Inc., Q1 2020 Earnings Call, Apr 29, 2020",
+  "claim_type": "capital_allocation",
+  "verbatim_quote": "we should be installing at a rate of 1,000 a week by end of year",
+  "summary": "Management expects to reach a Solar Roof installation rate of 1,000 per week by the end of the year.",
+  "horizon_raw": "by end of year",
+  "horizon_period": "nan",
+  "horizon_end_date": null,
+  "transcript_id": 2019551,
+  "component_id": 79011184
+}

@@ -1,0 +1,16 @@
+{
+  "claim_id": "TSLA_20200129_24163afe",
+  "ticker": "TSLA",
+  "call_date": "2020-01-29",
+  "company": "Tesla, Inc.",
+  "fiscal_period": "Q4 2019",
+  "source_call": "Tesla, Inc., Q4 2019 Earnings Call, Jan 29, 2020",
+  "claim_type": "capital_allocation",
+  "verbatim_quote": "we also anticipate significant progress on factory construction of Shanghai- and Berlin-built Model Y, which will result in continued increases in capital spending",
+  "summary": "Management anticipates significant progress on the construction of Shanghai and Berlin factories for Model Y, leading to increased capital spending.",
+  "horizon_raw": "nan",
+  "horizon_period": "nan",
+  "horizon_end_date": null,
+  "transcript_id": 1898027,
+  "component_id": 74420392
+}

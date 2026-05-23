@@ -1,0 +1,16 @@
+{
+  "claim_id": "TSLA_20200429_28864b0c",
+  "ticker": "TSLA",
+  "call_date": "2020-04-29",
+  "company": "Tesla, Inc.",
+  "fiscal_period": "Q1 2020",
+  "source_call": "Tesla, Inc., Q1 2020 Earnings Call, Apr 29, 2020",
+  "claim_type": "capital_allocation",
+  "verbatim_quote": "we are absolutely continuing our Model Y capacity expansion at full speed at both Giga Berlin and Giga Shanghai, and here in Fremont when they will let us continue",
+  "summary": "Management is committed to continuing the Model Y capacity expansion at Giga Berlin, Giga Shanghai, and Fremont.",
+  "horizon_raw": "nan",
+  "horizon_period": "nan",
+  "horizon_end_date": null,
+  "transcript_id": 2019551,
+  "component_id": 79011152
+}

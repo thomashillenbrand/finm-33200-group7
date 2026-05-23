@@ -1,0 +1,16 @@
+{
+  "claim_id": "TSLA_20200129_97a2c1b9",
+  "ticker": "TSLA",
+  "call_date": "2020-01-29",
+  "company": "Tesla, Inc.",
+  "fiscal_period": "Q4 2019",
+  "source_call": "Tesla, Inc., Q4 2019 Earnings Call, Jan 29, 2020",
+  "claim_type": "capital_allocation",
+  "verbatim_quote": "we're going to pay down the debt, just as time goes by",
+  "summary": "Management plans to continue paying down debt over time.",
+  "horizon_raw": "nan",
+  "horizon_period": "nan",
+  "horizon_end_date": null,
+  "transcript_id": 1898027,
+  "component_id": 74420488
+}
