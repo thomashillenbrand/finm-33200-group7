@@ -6,6 +6,9 @@ We are building an agentic system that produces auditable historical *truthfulne
 
 See [`CLAUDE.md`](CLAUDE.md) for full project context, [`workplan.md`](workplan.md) for the day-by-day execution plan, and [`proposal_for_submission.md`](proposal_for_submission.md) for the formal scope.
 
+For an end-to-end dataflow walkthrough with diagrams (workstreams A–D,
+schemas, module-by-module tour), see [`docs/architecture.md`](docs/architecture.md).
+
 ## Project structure
 
 ```

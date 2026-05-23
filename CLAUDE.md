@@ -42,6 +42,7 @@ Three deliverables:
 - `workplan.md` — 10-day execution plan with workstreams and daily milestones
 - `pitch.md` — older framing, not authoritative; use proposal/CLAUDE.md when in conflict
 - `README.md` — setup, project structure, smoke tests, and CLI usage for the data_pull, extractor, and verifier packages
+- `docs/architecture.md` — end-to-end dataflow, mermaid diagrams, module-by-module tour. Read this first for a code-level orientation; it's the baseline iter-3 changes should be planned against.
 
 ## Workstreams
 
