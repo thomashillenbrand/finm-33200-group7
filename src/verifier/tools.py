@@ -47,12 +47,17 @@ def bind_search_filings(ticker: str, after_date: date):
             query: Free-form text describing what to look for. Examples:
                 "share repurchase amount Q1 2024", "capex 2024 actual spend".
             before_date: Optional upper bound on filing date (inclusive).
+                Must be strictly later than the call date that floors the
+                search; values at or before the floor are non-useful and are
+                ignored (treated as open-ended).
             forms: Optional restriction to filing forms (e.g. ["10-Q", "8-K"]).
 
         Returns:
             Up to 8 matching excerpts, each preceded by a bracketed
             `[form filed YYYY-MM-DD, accession ...]` header.
         """
+        if before_date is not None and before_date <= after_date:
+            before_date = None
         items = index.query(query, after_date=after_date,
                             before_date=before_date, forms=forms, k=8)
         return _stringify_evidence(items)

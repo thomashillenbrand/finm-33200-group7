@@ -14,6 +14,7 @@ Two LLM calls per verification — acceptable cost for iteration 1.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -43,7 +44,35 @@ def _configure_cache(enabled: bool) -> None:
     set_llm_cache(SQLiteCache(database_path=str(_LLM_CACHE_PATH)))
 
 Mode = Literal["evidence", "verdict"]
-MODEL_NAME = "openai:gpt-4o-mini"
+
+
+def _require_model_env(var: str) -> str:
+    """Read a model identifier from the environment, raising if unset.
+
+    Model identifiers are configuration with no hardcoded fallback — they must
+    come from the environment (see ``.env.example``).
+    """
+    model = os.environ.get(var)
+    if not model:
+        raise RuntimeError(
+            f"{var} is not set. Copy .env.example to .env (it sets the model "
+            f"identifiers) or export {var} before running."
+        )
+    return model
+
+
+def _resolve_agent_model() -> str:
+    """Tool-using agent model from ``VERIFIER_AGENT_MODEL``."""
+    return _require_model_env("VERIFIER_AGENT_MODEL")
+
+
+def _resolve_parser_model() -> str:
+    """Structured-output parser model from ``VERIFIER_PARSER_MODEL``.
+
+    Independent of ``_resolve_agent_model`` so the parser can be a different
+    (e.g. cheaper) model than the agent loop without code edits.
+    """
+    return _require_model_env("VERIFIER_PARSER_MODEL")
 
 EVIDENCE_SYSTEM_PROMPT = """You are a financial research assistant helping label SEC filings.
 
@@ -103,7 +132,7 @@ def build_agent(mode: Mode, *, tools: list):
         raise ValueError(f"Unknown mode: {mode!r}. Expected 'evidence' or 'verdict'.")
 
     return create_deep_agent(
-        model=init_chat_model(MODEL_NAME, max_retries=3, temperature=0.1),
+        model=init_chat_model(_resolve_agent_model(), max_retries=3, temperature=0.1),
         system_prompt=system_prompt,
         tools=tools,
     )
@@ -120,7 +149,7 @@ def _extract_structured(final_text: str, mode: Mode) -> EvidenceBundle | Verdict
     a JSON object matching the pydantic schema. Deterministic and well-tested.
     """
     schema = _output_schema(mode)
-    extractor = init_chat_model(MODEL_NAME, temperature=0, max_retries=3).with_structured_output(schema)
+    extractor = init_chat_model(_resolve_parser_model(), temperature=0, max_retries=3).with_structured_output(schema)
     instruction = (
         "Extract the agent's final answer into the schema. "
         "Preserve all evidence excerpts verbatim. Do not truncate, paraphrase, "

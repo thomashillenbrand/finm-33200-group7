@@ -4,7 +4,7 @@ from schemas.claim import CLAIM_TYPES, CSV_FIELDS, Claim, ClaimType, make_claim_
 from schemas.evidence_bundle import EvidenceBundle
 from schemas.evidence_item import EvidenceItem
 from schemas.extracted_claim import ExtractedClaim, ExtractionResponse
-from schemas.verdict import Verdict
+from schemas.verdict import Verdict, VerdictLabel
 
 __all__ = [
     "Claim",
@@ -17,4 +17,5 @@ __all__ = [
     "EvidenceItem",
     "EvidenceBundle",
     "Verdict",
+    "VerdictLabel",
 ]
