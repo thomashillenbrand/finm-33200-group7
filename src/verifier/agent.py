@@ -200,3 +200,52 @@ def verify_from_dict(
     its error structure is already readable.
     """
     return verify(Claim(**d), mode, trace=trace)
+
+
+from datetime import date as _date_cls
+from datetime import datetime as _dt_cls
+
+SUPPORTED_CLAIM_TYPES = {"capital_allocation"}
+
+
+class UnsupportedClaimTypeError(ValueError):
+    """Raised when verify() is called with a claim_type iter-2 cannot handle."""
+
+
+def _format_claim_for_agent(claim: Claim, *, today: _date_cls | None = None) -> str:
+    """Render the user message the agent loop sees for `claim`.
+
+    Deliberately omits the ticker — that's closed over in the tool binding, and
+    naming it in prose would invite the LLM to second-guess the corpus.
+
+    Raises UnsupportedClaimTypeError on numerical_guidance (Compustat deferred
+    to iter 3).
+    """
+    if claim.claim_type not in SUPPORTED_CLAIM_TYPES:
+        raise UnsupportedClaimTypeError(
+            f"Iter-2 verifies capital-allocation claims only; "
+            f"got claim_type={claim.claim_type!r}. "
+            f"Compustat-backed numerical_guidance lands in iter 3."
+        )
+    today = today or _dt_cls.utcnow().date()
+    horizon_hint = ""
+    if claim.horizon_end_date is not None and claim.horizon_end_date < today:
+        horizon_hint = (
+            f"\nThe horizon ends {claim.horizon_end_date.isoformat()} — "
+            f"narrow `before_date` accordingly when it helps."
+        )
+
+    return (
+        f"A management claim was made on {claim.call_date.isoformat()} "
+        f"in the {claim.fiscal_period} earnings call.\n\n"
+        f"Type: {claim.claim_type}\n"
+        f"Quote: \"{claim.verbatim_quote}\"\n"
+        f"Summary: {claim.summary}\n"
+        f"Stated horizon: {claim.horizon_raw or 'unspecified'} "
+        f"(resolved end: "
+        f"{claim.horizon_end_date.isoformat() if claim.horizon_end_date else 'unknown'})\n"
+        f"Speaker: {claim.speaker_name or 'unknown'} "
+        f"({claim.speaker_type or 'unknown'})\n\n"
+        f"Use search_filings to gather evidence from filings filed after "
+        f"{claim.call_date.isoformat()}.{horizon_hint}"
+    )
