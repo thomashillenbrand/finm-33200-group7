@@ -45,7 +45,7 @@ finm-33200-group7/
 │   ├── claims/                # extractor output — claims CSVs
 │   ├── stub/                  # canned fixtures (example_claim.json + canned_excerpts.json)
 │   └── traces/                # per-run agent traces (gitignored)
-├── Pulled_data/               # data_pull output: per-ticker transcripts, Compustat, SEC filings (gitignored)
+├── pulled_data/               # data_pull output: per-ticker transcripts, Compustat, SEC filings (gitignored)
 └── docs/                      # design docs and other supporting material
 ```
 
@@ -97,7 +97,7 @@ land in `data/traces/` (gitignored).
 
 `src/data_pull.py` is a single-file CLI that, for one ticker, downloads
 everything we need from external sources into a per-ticker tree under
-`Pulled_data/`:
+`pulled_data/`:
 
 - earnings-call transcript metadata + full text from WRDS Capital IQ
   (`ciq_transcripts.*`) → parquet
@@ -123,7 +123,7 @@ the project-root `.env`; SEC requests use a `User-Agent` from
 Output layout for ticker `XXX`:
 
 ```
-Pulled_data/XXX/
+pulled_data/XXX/
 ├── transcript/   # XXX_metadata.parquet + XXX_transcripts.parquet
 ├── Compustat/    # XXX_compustat_quarterly.parquet
 └── SEC/
@@ -133,7 +133,7 @@ Pulled_data/XXX/
     └── XXX_sec_filings_index.parquet
 ```
 
-`Pulled_data/` is gitignored — every collaborator pulls their own copy.
+`pulled_data/` is gitignored — every collaborator pulls their own copy.
 
 Caveat: cash-flow columns in `comp.fundq` (`capxy`, `dvy`, `dltisy`,
 `dltry`, `prstkcy`, etc.) are reported year-to-date. Take first

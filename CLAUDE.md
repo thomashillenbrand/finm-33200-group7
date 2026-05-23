@@ -58,9 +58,8 @@ Gold-set labeling is a whole-team sprint on days 6–7, not loaded onto stream D
 2. LLM provider choice per stage (extraction stage: `openai:gpt-4o-mini`, overridable via the `--model` flag; other stages TBD)
 3. Capital allocation grading rubric (partial-credit policy — e.g., "announced $1B buyback over 12mo → executed $700M in 12mo" → partial? full?)
 4. Labeling rubric finalization
-5. Extraction: the day-5 Tesla pilot showed the model misclassified among the original buyback/dividend/capex/debt types and over-extracted out-of-scope content (product pricing, product specs, vague sentiment). Fixed on 2026-05-23: the schema was collapsed to two types (numerical_guidance, capital_allocation) and the prompt hardened to v4 (`b-extract-v4`) with scope-guard negative examples. Remaining risk to watch during gold-set labeling: the numerical-vs-capital boundary and residual over-extraction.
+5. Extraction: occasional claim-type misclassification (e.g. a product-timeline statement filed as `debt`) — watch for it during gold-set labeling
 6. Extraction: horizon resolver does not handle bare months ("by the end of March") or bare quarters ("Q2" with no year) — extend if resolution coverage matters
-7. Extraction: the unify-merge dropped the second prototype's richer fields (`value_or_amount`, `confidence_language`) and its spot-check/scoring QA scripts. Re-add a CSV-based spot-check helper if the gold-set labeling sprint needs one; revisit the extra fields only if workstream C asks for them.
 
 ## Execution notes
 

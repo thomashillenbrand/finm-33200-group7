@@ -39,7 +39,7 @@ from dotenv import load_dotenv
 
 load_dotenv()  # walks up from cwd to find the project-root .env
 
-BASE_DIR = "Pulled_data"
+BASE_DIR = "pulled_data"
 
 
 def ticker_dirs(ticker: str) -> dict[str, str]:
