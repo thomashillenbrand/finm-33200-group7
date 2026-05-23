@@ -84,7 +84,7 @@ def built_index(tmp_path, mock_embeddings, monkeypatch):
         shutil.copy(src_dir / f, sec_dir / f)
     shutil.copy(
         src_dir / "sec_filings_index.parquet",
-        ticker_dir / "MINI_sec_filings_index.parquet",
+        sec_dir / "MINI_sec_filings_index.parquet",
     )
     import verifier.index as idx
     import verifier.corpus as corp

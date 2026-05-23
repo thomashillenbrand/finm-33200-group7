@@ -141,10 +141,10 @@ def ticker_root(tmp_path):
     for f in ["sample_10K.htm", "sample_10Q.htm", "sample_8K.htm"]:
         shutil.copy(src_dir / f, sec_dir / f)
     # Copy the index parquet to where build_index expects it:
-    #   pulled_data/<TICKER>/<TICKER>_sec_filings_index.parquet
+    #   pulled_data/<TICKER>/SEC/<TICKER>_sec_filings_index.parquet
     shutil.copy(
         src_dir / "sec_filings_index.parquet",
-        ticker_dir / "MINI_sec_filings_index.parquet",
+        sec_dir / "MINI_sec_filings_index.parquet",
     )
     # Patch the package-level PULLED_DATA_ROOT to our tmp.
     import verifier.index as idx
@@ -209,11 +209,11 @@ def test_build_index_handles_all_non_html_corpus(tmp_path, mock_embeddings, monk
         "primaryDocDescription": "PDF only",
         "localPath": "doc.pdf",
     }]
-    pd.DataFrame(rows).to_parquet(ticker_dir / "NOHTML_sec_filings_index.parquet")
     # The .pdf doesn't need real content — _chunk_filing skips non-html extensions
     # before reading the file. (Touch it anyway to be safe.)
     (ticker_dir / "SEC").mkdir()
     (ticker_dir / "SEC" / "doc.pdf").write_bytes(b"")
+    pd.DataFrame(rows).to_parquet(ticker_dir / "SEC" / "NOHTML_sec_filings_index.parquet")
     monkeypatch.setattr(idx, "PULLED_DATA_ROOT", tmp_path / "pulled_data")
     # Must not raise. Must not write index/.
     build_index("NOHTML")
@@ -242,7 +242,7 @@ def test_build_index_drops_stale_chunks_from_removed_filings(ticker_root, mock_e
     assert len(accessions_before) == 3  # 10-K, 10-Q, 8-K all present
 
     # Rewrite the SEC index parquet to drop the 8-K.
-    sec_index_path = ticker_root / "MINI_sec_filings_index.parquet"
+    sec_index_path = ticker_root / "SEC" / "MINI_sec_filings_index.parquet"
     df = pd.read_parquet(sec_index_path)
     df = df[df["form"] != "8-K"].reset_index(drop=True)
     df.to_parquet(sec_index_path)

@@ -145,7 +145,7 @@ def _ticker_dir(ticker: str) -> Path:
 
 
 def _sec_index_path(ticker: str) -> Path:
-    return _ticker_dir(ticker) / f"{ticker}_sec_filings_index.parquet"
+    return _ticker_dir(ticker) / "SEC" / f"{ticker}_sec_filings_index.parquet"
 
 
 def _index_dir(ticker: str) -> Path:
@@ -203,7 +203,7 @@ def build_index(ticker: str, *, refresh: bool = False) -> None:
     """Build (or incrementally update) the FAISS index for a single ticker.
 
     Inputs (produced by data_pull.py):
-      pulled_data/<TICKER>/<TICKER>_sec_filings_index.parquet
+      pulled_data/<TICKER>/SEC/<TICKER>_sec_filings_index.parquet
       pulled_data/<TICKER>/SEC/<form>/<filename>.htm
 
     Outputs:
@@ -345,7 +345,7 @@ def _cli_main(argv: list[str] | None = None) -> int:
     if args.all:
         tickers = sorted(
             p.name for p in PULLED_DATA_ROOT.iterdir()
-            if p.is_dir() and (p / f"{p.name}_sec_filings_index.parquet").exists()
+            if p.is_dir() and (p / "SEC" / f"{p.name}_sec_filings_index.parquet").exists()
         )
         for t in tickers:
             print(f"[index] === {t} ===")
