@@ -9,6 +9,8 @@ fixture (or by running with `-m live` and a real OPENAI_API_KEY).
 from __future__ import annotations
 
 import hashlib
+import shutil
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -66,3 +68,30 @@ def mock_embeddings(monkeypatch):
     except ImportError:
         pass
     return mock
+
+
+@pytest.fixture
+def built_index(tmp_path, mock_embeddings, monkeypatch):
+    """Build a real on-disk MINI index using the fixture filings + mock embeds.
+
+    Shared by tests in test_corpus.py and test_tools.py.
+    """
+    src_dir = Path(__file__).parent / "fixtures" / "mini_filings"
+    ticker_dir = tmp_path / "pulled_data" / "MINI"
+    sec_dir = ticker_dir / "SEC"
+    sec_dir.mkdir(parents=True)
+    for f in ["sample_10K.htm", "sample_10Q.htm", "sample_8K.htm"]:
+        shutil.copy(src_dir / f, sec_dir / f)
+    shutil.copy(
+        src_dir / "sec_filings_index.parquet",
+        ticker_dir / "MINI_sec_filings_index.parquet",
+    )
+    import verifier.index as idx
+    import verifier.corpus as corp
+    from verifier.corpus import SearchIndex
+    monkeypatch.setattr(idx, "PULLED_DATA_ROOT", tmp_path / "pulled_data")
+    monkeypatch.setattr(corp, "PULLED_DATA_ROOT", tmp_path / "pulled_data")
+    monkeypatch.setattr(SearchIndex, "_cache", {}, raising=False)
+    from verifier.index import build_index
+    build_index("MINI")
+    return ticker_dir

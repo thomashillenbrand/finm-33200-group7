@@ -20,7 +20,6 @@ from deepagents import create_deep_agent
 from langchain.chat_models import init_chat_model
 
 from schemas import Claim, EvidenceBundle, Verdict
-from verifier.tools import search_filings
 from verifier.trace import to_records, save_trace, print_trace
 
 Mode = Literal["evidence", "verdict"]
