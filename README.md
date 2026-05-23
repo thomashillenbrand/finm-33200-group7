@@ -16,28 +16,16 @@ finm-33200-group7/
 ├── .env.example               # template for API keys and other settings
 ├── src/
 │   ├── data_pull.py           # workstream A — single-file CLI: WRDS transcripts + Compustat quarterly + SEC EDGAR filings, per ticker
-│   ├── extractor/             # workstream B — claim extraction pipeline (iteration 1)
+│   ├── extractor/             # workstream B — claim extraction pipeline
 │   │   ├── __init__.py        # re-exports the public API
 │   │   ├── schema.py          # Pydantic models: Claim, ExtractedClaim, ExtractionResponse
-│   │   ├── reader.py          # loads transcript CSVs, groups turns into earnings calls
+│   │   ├── reader.py          # loads transcript parquet, groups turns into earnings calls
 │   │   ├── horizon.py         # resolves claim time horizons to absolute dates
-│   │   ├── prompt.py          # extraction system prompt + few-shot example
+│   │   ├── prompt.py          # extraction system prompt + few-shot examples
 │   │   ├── provenance.py      # matches an extracted quote back to its source turn
-│   │   ├── extract.py         # build_extractor, extract_call, extract_transcript, dedupe_claims
+│   │   ├── extract.py         # build_extractor, extract_call, filter_unquantified_guidance, dedupe_claims
 │   │   ├── output.py          # writes the claims CSV
 │   │   └── run.py             # CLI: python -m extractor.run --input ... --output ...
-│   ├── extractor_2/           # workstream B — claim extraction pipeline (iteration 2; will be merged with extractor/)
-│   │   ├── __init__.py        # re-exports the public API
-│   │   ├── schema.py          # Pydantic models: NumericalGuidanceClaim / CapitalAllocationClaim discriminated union
-│   │   ├── loader.py          # TranscriptLoader for WRDS-format parquet (matches data_pull output)
-│   │   ├── horizon.py         # categorical horizon → date range
-│   │   ├── prompts.py         # extraction system prompt + few-shot example
-│   │   ├── provenance.py      # links a source span back to a transcript component
-│   │   ├── extract.py         # filter_vague, deduplicate, enrich_result
-│   │   ├── output.py          # writes per-call JSON + CSV
-│   │   ├── for_verifier.py    # converts ExtractionResult → verifier.schema.Claim
-│   │   ├── run.py             # CLI: python -m extractor.run --parquet ... --ticker ...
-│   │   └── batch_run.py       # CLI: python -m extractor.batch_run (4 tickers × ≤20 calls, 2020–2025)
 │   └── verifier/              # workstream C — verification agent (iteration 1: stubbed tools)
 │       ├── __init__.py        # re-exports the public API
 │       ├── schema.py          # Pydantic models: Claim, EvidenceItem, EvidenceBundle, Verdict
@@ -47,13 +35,13 @@ finm-33200-group7/
 │       ├── agent.py           # build_agent, verify, verify_from_dict
 │       └── run.py             # CLI: python -m verifier.run --claim ... --mode {evidence,verdict}
 ├── tests/
-│   ├── test_extractor_*.py    # extractor tests: schema, reader, horizon, provenance, dedupe, smoke
+│   ├── test_extractor_*.py    # extractor tests: schema, reader, horizon, provenance, filter, dedupe, output, smoke
 │   ├── test_schema.py         # verifier Pydantic schema tests
 │   ├── test_corpus.py         # verifier stub corpus loader test
 │   ├── test_tools.py          # verifier search_filings stub test
 │   └── test_smoke.py          # verifier end-to-end live tests (marked `live`; run with `pytest -m live`)
 ├── data/
-│   ├── Transcript/            # input earnings-call transcript CSVs (4 firms)
+│   ├── Transcript/            # interim transcript CSVs (4 firms; superseded by Pulled_data/ parquet)
 │   ├── claims/                # extractor output — claims CSVs
 │   ├── stub/                  # canned fixtures (example_claim.json + canned_excerpts.json)
 │   └── traces/                # per-run agent traces (gitignored)
@@ -153,14 +141,19 @@ differences within each fiscal year to recover per-quarter values.
 
 ## Claim extraction (workstream B)
 
-The `extractor` package turns earnings-call transcripts into a CSV of typed,
-forward-looking management claims for workstreams C and D to consume. For each
-earnings call it makes one OpenAI structured-output request, recovers each
-claim's source turn by matching the quote back to the transcript, resolves
-claim time horizons to absolute dates, and drops exact-duplicate claims.
+The `extractor` package turns the WRDS transcript parquet written by
+`data_pull.py` into a CSV of typed, forward-looking management claims for
+workstreams C and D to consume. Capital IQ stores each call as several
+transcript versions, so the reader first keeps only the final, proofed copy of
+each call. For every earnings call it then makes one OpenAI structured-output
+request, recovers each claim's source turn by matching the quote back to the
+transcript, resolves claim time horizons to absolute dates, drops
+numerical-guidance claims that state no specific figure, and removes
+exact-duplicate claims.
 
-Every claim is classified into one of five types — `numerical_guidance`,
-`buyback`, `dividend`, `capex`, `debt` — and carries its verbatim quote, a
+Every claim is classified as either `numerical_guidance` (graded against
+Compustat) or `capital_allocation` (share buybacks, dividends, capex, and debt
+actions — graded against SEC filings), and carries its verbatim quote, a
 paraphrase, provenance (source turn + speaker), and a resolved horizon. By
 design the schema holds no verdict or outcome field: the extractor surfaces
 claims, the verifier surfaces evidence, and human labelers assign verdicts.
@@ -170,11 +163,11 @@ Run it with the CLI:
 ```bash
 # 5-call pilot on one firm
 python -m extractor.run \
-    --input data/Transcript/Tesla_2018_2022.csv \
+    --input Pulled_data/TSLA/transcript/TSLA_transcripts.parquet \
     --output data/claims/pilot_claims.csv --limit 5
 
-# full run over every transcript CSV in a directory
-python -m extractor.run --input data/Transcript --output data/claims/all_claims.csv
+# full run over every transcript parquet under a directory
+python -m extractor.run --input Pulled_data --output data/claims/all_claims.csv
 
 # override the model (default: openai:gpt-4o-mini)
 python -m extractor.run --input ... --output ... --model openai:gpt-5.5

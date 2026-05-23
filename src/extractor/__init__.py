@@ -8,8 +8,10 @@ writes them to a CSV consumed by workstream C (verification) and workstream D
 from extractor.extract import (
     build_extractor,
     dedupe_claims,
+    dedupe_similar_claims,
     extract_call,
     extract_transcript,
+    filter_unquantified_guidance,
 )
 from extractor.horizon import resolve_horizon
 from extractor.output import write_claims_csv
@@ -39,6 +41,8 @@ __all__ = [
     "build_extractor",
     "extract_call",
     "extract_transcript",
+    "filter_unquantified_guidance",
     "dedupe_claims",
+    "dedupe_similar_claims",
     "write_claims_csv",
 ]
