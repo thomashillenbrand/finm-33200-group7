@@ -540,87 +540,20 @@ def aggregate(results: list[PerClaimResult]) -> dict:
     }
 ```
 
-- [ ] **Step 4: Add the CLI (in the same file)**
+- [ ] **Step 4: Add the CLI (in the same file)** — *implemented; design changed from the original plan*
 
-```python
-def _cli() -> int:
-    """`python -m verifier.eval --gold <path> --traces <dir> --k 8`
+**Design change discovered during implementation.** The original plan assumed the CLI would read persisted trace files keyed by claim_id (`--traces <dir>`, glob `<claim_id>__*.json`, parse an `output` field). Reading `src/verifier/trace.py` showed that's not viable: traces are named `verify_{mode}_{timestamp}.json` (not keyed by claim_id), and they store only raw message records — **no structured `EvidenceBundle`/`Verdict`, no `output` field**. `verify()` returns the structured output in memory and never persists it.
 
-    Reads JSONL gold labels, finds the matching trace JSON for each claim_id
-    under the trace directory, scores per claim, prints summary + writes a CSV.
-    """
-    import argparse
-    import csv
-    import json
+So the CLI **runs the agent live per gold claim** instead of parsing traces:
 
-    p = argparse.ArgumentParser()
-    p.add_argument("--gold", required=True, type=Path,
-                   help="Path to gold-label JSONL (or directory of JSONL files)")
-    p.add_argument("--traces", required=True, type=Path,
-                   help="Directory containing trace .json files from verifier.run")
-    p.add_argument("--k", type=int, default=8,
-                   help="Top-k cutoff for recall/precision (default 8 = tool's k)")
-    p.add_argument("--output", type=Path, default=Path("data/eval/per_claim_results.csv"),
-                   help="Where to write per-claim CSV")
-    args = p.parse_args()
-
-    # Load gold (file or directory of *.jsonl)
-    gold_paths = (
-        sorted(args.gold.glob("*.jsonl")) if args.gold.is_dir() else [args.gold]
-    )
-    from verifier.gold import load_gold_labels
-    gold_labels: dict[str, GoldLabel] = {}
-    for gp in gold_paths:
-        for gl in load_gold_labels(gp):
-            gold_labels[gl.claim_id] = gl
-
-    # For each gold claim, find the matching trace. Convention: trace files are
-    # named `<claim_id>__<timestamp>.json` (see verifier.trace). If multiple
-    # traces exist, take the most recent.
-    results: list[PerClaimResult] = []
-    for claim_id, gold in gold_labels.items():
-        matches = sorted(args.traces.glob(f"{claim_id}__*.json"))
-        if not matches:
-            print(f"WARN: no trace found for {claim_id}, skipping")
-            continue
-        trace = json.loads(matches[-1].read_text())
-        # Parse the trace's `output` field into EvidenceBundle or Verdict.
-        # Trace schema is set by verifier.trace; eval.py treats both shapes.
-        out = trace.get("output", {})
-        if "verdict" in out:
-            from schemas import Verdict as VerdictModel
-            verdict = VerdictModel.model_validate(out)
-            bundle = EvidenceBundle(items=verdict.items)
-            r = score_retrieval(gold, bundle, k=args.k)
-            r = PerClaimResult(
-                claim_id=r.claim_id,
-                recall_at_k=r.recall_at_k,
-                precision=r.precision,
-                verdict_match=score_verdict(gold, verdict),
-            )
-        else:
-            bundle = EvidenceBundle.model_validate(out)
-            r = score_retrieval(gold, bundle, k=args.k)
-        results.append(r)
-
-    summary = aggregate(results)
-    print(json.dumps(summary, indent=2))
-
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    with args.output.open("w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["claim_id", "recall_at_k", "precision", "verdict_match"])
-        for r in results:
-            w.writerow([r.claim_id, r.recall_at_k, r.precision, r.verdict_match])
-    print(f"wrote {args.output}")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(_cli())
+```
+python -m verifier.eval --gold <jsonl|dir> --claims <pilot_csv> \
+    [--mode evidence|verdict] [--k 8] [--no-cache] [--output <csv>]
 ```
 
-**Caveat on trace file naming.** This CLI assumes traces are named `<claim_id>__<timestamp>.json`. Check `src/verifier/trace.py` for the actual naming convention before finalizing — if traces are named differently (e.g., `<timestamp>.json` only), the glob pattern needs to change, OR the CLI needs to read the `claim_id` field out of each trace and match that way. Test this on a real trace before declaring the task done.
+For each gold label: look up the claim row in `--claims` (the pilot CSV) by `claim_id`, build a `Claim` (NaN cells dropped so Pydantic fills defaults), call `verify(claim, mode, trace=False, cache=...)`, then `score_retrieval` (+ `score_verdict` in verdict mode). Skips with a warning on unknown claim_id or `UnsupportedClaimTypeError` (numerical_guidance). The SQLite chat cache (on by default) makes re-scoring cheap after the first pass; `--no-cache` forces fresh calls.
+
+The pure functions (`score_retrieval`/`score_verdict`/`aggregate`) are unchanged from Steps 1–3 and stay offline-unit-tested. The agent imports are deferred inside `_cli()` so importing `verifier.eval` for the unit tests doesn't pull in the agent stack or require the model env vars.
 
 - [ ] **Step 5: Run the offline tests**
 
@@ -628,17 +561,18 @@ if __name__ == "__main__":
 mamba run -n truth pytest tests/test_eval.py -v
 ```
 
-Expected: all PASS.
+Expected: all PASS (8 tests).
 
 - [ ] **Step 6: Smoke-test the CLI**
 
-Manually create one fake gold-label file + one trace file in `tmp/`, run:
+Confirm the CLI parses (a full live run needs a real gold JSONL + a built index):
 
 ```bash
-mamba run -n truth python -m verifier.eval --gold tmp/gold.jsonl --traces tmp/ --k 8
+mamba run -n truth python -m verifier.eval --help
 ```
 
-Expected: prints summary JSON and writes `data/eval/per_claim_results.csv`.
+A real run is part of the pilot flow in "Done criteria" below:
+`--gold data/gold/pilot_tsla.jsonl --claims data/claims/pilot_claims.csv --mode evidence`.
 
 - [ ] **Step 7: Commit (ask user)**
 
