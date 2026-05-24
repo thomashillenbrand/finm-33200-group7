@@ -9,6 +9,8 @@ See [`CLAUDE.md`](CLAUDE.md) for full project context, [`workplan.md`](workplan.
 For an end-to-end dataflow walkthrough with diagrams (workstreams A–D,
 schemas, module-by-module tour), see [`docs/architecture.md`](docs/architecture.md).
 
+New to git, or want a quick reference for our branch-and-PR workflow? See [`GIT_CHEATSHEET.md`](GIT_CHEATSHEET.md).
+
 ## Project structure
 
 ```

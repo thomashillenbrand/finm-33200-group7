@@ -4,7 +4,7 @@ A first-read map of the codebase. Each section names the modules involved, the
 shapes flowing between them, and the on-disk artifacts each stage writes.
 
 For project goals, scope, and team see `CLAUDE.md`. For setup and CLI ergonomics
-see `README.md`. For deferred/iter-3 work see `docs/future_optimizations.md`.
+see `README.md`. For deferred work see `docs/future_optimizations.md`.
 
 ---
 
@@ -71,25 +71,29 @@ finm-33200-group7/
 ├── .env / .env.example          secrets (OPENAI_API_KEY, WRDS_USERNAME, …)
 ├── docs/
 │   ├── architecture.md          this file
-│   ├── future_optimizations.md  deferred / iter-3 backlog
+│   ├── future_optimizations.md  deferred backlog (open work)
+│   ├── labeling_rubric.md       verdict rubric — TEAM DELIVERABLE, still a stub
+│   ├── labeling-helper-design.md  design for the agent-free gold-labeling CLI (unbuilt)
 │   └── superpowers/             specs + plans (gitignored)
 ├── src/
 │   ├── data_pull.py             workstream A — single file, per-ticker pull
 │   ├── schemas/                 shared Pydantic models (B/C/D contract)
 │   ├── extractor/               workstream B — transcripts → claims CSV
 │   └── verifier/                workstream C — indexer + agent + tracing
-├── tests/                       pytest (134 tests; 4 gated behind `-m live`)
+├── tests/                       pytest (164 tests; 4 gated behind `-m live`)
 ├── data/
 │   ├── claims/                  extractor output (CSV per run)
 │   ├── stub/                    canned claim JSONs for smoke runs
-│   └── traces/                  one .json + .md per verifier invocation
+│   ├── traces/                  one .json + .md per verifier invocation
+│   ├── gold/                    hand-labeled gold set (JSONL) + template + README
+│   └── eval/                    scorer output (per_claim_results.csv)
 └── pulled_data/                 gitignored; data_pull + indexer outputs
     ├── .cache/llm_cache.sqlite  SQLite chat-completion cache
     └── <TICKER>/
         ├── transcript/          WRDS transcript parquet + metadata
         ├── SEC/                 EDGAR HTML filings + filings-index parquet
         ├── Compustat/           quarterly fundamentals parquet
-        └── index/               FAISS + chunks parquet (iter-2 verifier index)
+        └── index/               FAISS + chunks parquet (verifier search index)
 ```
 
 ---
@@ -151,8 +155,27 @@ classDiagram
     class Verdict {
       <<verdict mode>>
       +list[EvidenceItem] items
-      +Label verdict
+      +VerdictLabel verdict
       +str reasoning
+    }
+    class GoldEvidence {
+      <<one labeled excerpt>>
+      +str accession_no
+      +Form form  // 10-K | 10-Q | 8-K
+      +date filing_date
+      +str quote  // <=500 chars
+      +str? section
+    }
+    class GoldLabel {
+      <<workstream D — hand label>>
+      +str claim_id
+      +str ticker
+      +str labeler
+      +datetime labeled_at
+      +list[GoldEvidence] expected_evidence
+      +VerdictLabel verdict
+      +Confidence confidence
+      +str labeler_notes
     }
 
     ExtractionResponse --> ExtractedClaim
@@ -161,6 +184,8 @@ classDiagram
     Claim ..> Verdict : verified to
     EvidenceBundle --> EvidenceItem
     Verdict --> EvidenceItem
+    GoldLabel --> GoldEvidence
+    Claim ..> GoldLabel : labeled as, by claim_id
 ```
 
 Key invariants:
@@ -171,6 +196,11 @@ Key invariants:
 - `make_claim_id(ticker, call_date, component_id, quote)` is deterministic on
   its inputs, so the same claim hashes to the same id across reruns and
   workstream-C results join cleanly back to the CSV.
+- `GoldLabel.verdict` reuses the **same `VerdictLabel` enum** as `Verdict.verdict`,
+  so the scorer (`verifier.eval`) compares gold vs. agent by equality. Gold
+  evidence is matched at `accession_no` granularity (not chunk spans), so the
+  gold set survives a chunker swap. Tested in `tests/test_gold.py` /
+  `tests/test_eval.py`.
 
 ---
 
@@ -250,7 +280,7 @@ flowchart TD
 
 | File | Role | Key entry points |
 |---|---|---|
-| `extract.py` | The end-to-end driver per call/transcript. `build_extractor`, `extract_call`, `extract_transcript`, `filter_unquantified_guidance`, `dedupe_*`. `MODEL_NAME = "openai:gpt-4o-mini"` (overridable via `--model`). |
+| `extract.py` | The end-to-end driver per call/transcript. `build_extractor`, `extract_call`, `extract_transcript`, `filter_unquantified_guidance`, `dedupe_*`. Model from `_resolve_extractor_model(explicit)`: a `--model` arg wins, else the `EXTRACTOR_MODEL` env var; no hardcoded fallback (raises if neither is set). |
 | `reader.py` | Reads the WRDS transcript parquet, collapses Capital IQ's multiple proofed versions to the final per-call copy, exposes `EarningsCall` + `Turn` dataclasses. `load_calls`, `build_call_input`. |
 | `prompt.py` | System + user prompt templates and the `PROMPT_VERSION` string that gets stamped on every `Claim`. `build_user_prompt`. |
 | `provenance.py` | `locate_quote(turns, quote)` — back-matches the model's `verbatim_quote` to a source turn so we know who said it (model-reported ids were unreliable in the pilot, so we recover them ourselves). |
@@ -294,7 +324,7 @@ flowchart TD
     html --> strip["extract_text_from_html()<br/>BeautifulSoup → paragraph-aware text"]
     strip --> tokchunk["chunk_text() — 600 tok/100 overlap<br/>cl100k_base, O(n) byte→char offsets"]
     tokchunk --> chunks["list[Chunk] per filing<br/>+ chunk_id (sha1)"]
-    chunks --> embed[("text-embedding-3-small<br/>OpenAIEmbeddings.embed_documents")]
+    chunks --> embed[("$EMBEDDING_MODEL<br/>OpenAIEmbeddings.embed_documents")]
     embed --> assemble["concat with existing,<br/>build IndexFlatIP (cosine)"]
     assemble --> atomic1["_atomic_write → chunks.parquet"]
     assemble --> atomic2["_atomic_write → faiss.index"]
@@ -310,7 +340,7 @@ flowchart TD
 | `_chunk_filing(row, sec_root)` | Read one filing, return list of chunk dicts. Skips non-HTML primary docs. |
 | `build_index(ticker, refresh=False)` | The driver. Incremental by default — re-embeds only new accessions; `refresh=True` wipes `index/` first. Detects FAISS↔parquet length mismatch as `IndexCorruptError`. |
 | `_cli_main` | `python -m verifier.index` argparse entry. |
-| `EMBED_MODEL = "text-embedding-3-small"` | OpenAI embedding model (planned to move to `$EMBEDDING_MODEL` — see future_optimizations.md). |
+| `_resolve_embedding_model()` | OpenAI embedding model from the `EMBEDDING_MODEL` env var; no hardcoded fallback (raises if unset). |
 
 ### 6b. SearchIndex (corpus.py)
 
@@ -349,7 +379,7 @@ sequenceDiagram
     participant P as _extract_structured (parser LLM)
 
     CLI->>V: Claim
-    V->>V: _format_claim_for_agent(claim)<br/>(ticker hidden; raises on numerical_guidance)
+    V->>V: _format_claim_for_agent(claim) [ticker hidden; raises on numerical_guidance]
     V->>V: _configure_cache(enabled)
     V->>T: bind_search_filings(claim.ticker, claim.call_date)
     V->>A: build_agent(mode, tools=[T])
@@ -367,20 +397,22 @@ sequenceDiagram
 ```
 
 The agent makes **two LLM calls** per verification: the agent loop itself
-(tool-using, `VERIFIER_AGENT_MODEL` — currently hardcoded `gpt-4o-mini`)
-and one final structured-output extraction (`VERIFIER_PARSER_MODEL` — also
-hardcoded today). Iter-3 will split these into separate env vars (see
-future_optimizations.md).
+(tool-using, model from `VERIFIER_AGENT_MODEL`) and one final structured-output
+extraction (model from `VERIFIER_PARSER_MODEL`). The two are independent env
+vars — the parser can be a cheaper model than the agent loop without code
+edits. Both resolvers raise if their var is unset; there is no hardcoded
+fallback.
 
 `verifier/agent.py`:
 
 | Symbol | Role |
 |---|---|
-| `verify(claim, mode, *, trace, cache)` | Main entry. Validates `claim_type ∈ SUPPORTED_CLAIM_TYPES` (iter-2: capital_allocation only), configures cache, binds the tool, runs the agent, parses to a typed result, optionally writes a trace. |
+| `verify(claim, mode, *, trace, cache)` | Main entry. Validates `claim_type ∈ SUPPORTED_CLAIM_TYPES` (currently `capital_allocation` only), configures cache, binds the tool, runs the agent, parses to a typed result, optionally writes a trace. |
 | `verify_from_dict(d, mode, ...)` | Thin: `Claim(**d)` then `verify()`. |
-| `build_agent(mode, *, tools)` | `create_deep_agent(model=…, system_prompt=…)`. `model=init_chat_model(MODEL_NAME, max_retries=3, temperature=0.1)`. |
+| `build_agent(mode, *, tools)` | `create_deep_agent(model=…, system_prompt=…)`. `model=init_chat_model(_resolve_agent_model(), max_retries=3, temperature=0.1)`. |
+| `_resolve_agent_model()` / `_resolve_parser_model()` | Read `VERIFIER_AGENT_MODEL` / `VERIFIER_PARSER_MODEL` via `_require_model_env`; raise if unset. |
 | `EVIDENCE_SYSTEM_PROMPT` / `VERDICT_SYSTEM_PROMPT` | Mode-swapping system prompts. The evidence prompt explicitly forbids verdict prose — the load-bearing language guarantee. |
-| `_extract_structured(text, mode)` | Second LLM call: `with_structured_output(EvidenceBundle | Verdict)`. |
+| `_extract_structured(text, mode)` | Second LLM call: `init_chat_model(_resolve_parser_model()).with_structured_output(EvidenceBundle | Verdict)`. |
 | `_configure_cache(enabled)` | Sets `SQLiteCache(pulled_data/.cache/llm_cache.sqlite)` as the process-global LLM cache when `cache=True`; `set_llm_cache(None)` otherwise. |
 | `_format_claim_for_agent(claim)` | Renders the user message. **Deliberately omits the ticker** — closed over in the tool binding, naming it in prose would invite the LLM to second-guess the corpus. |
 | `UnsupportedClaimTypeError` | Raised by `_format_claim_for_agent` for non-capital-allocation claims. |
@@ -405,6 +437,12 @@ no-time-leakage guarantee, verified empirically by `tests/test_verify_live.py`
 and by the 5-claim smoke run on 2026-05-23 (0 time-leaks across 61 retrieved
 chunks).
 
+The LLM-visible `before_date` is floored at the tool layer: if the model passes
+`before_date <= after_date` (an empty window — a bug seen in the smoke run where
+the agent set `before_date` to the call date and got 0 hits), the tool silently
+widens it to open-ended (`None`) and the docstring warns against it. So a
+mistaken upper bound degrades to "no upper bound" rather than to zero evidence.
+
 `verifier/tools.py`:
 
 | Symbol | Role |
@@ -425,8 +463,8 @@ matching `.md` for hand-inspection.
 | `save_trace(records, phase_name)` | Writes `.json` + `.md` and returns both paths. |
 | `print_trace(records)` | Pretty-print to stdout for the CLI. |
 
-The `.md` files are the artifact used for the iter-2 Task 25 hand-inspection
-smoke run.
+The `.md` files are the artifact used for the hand-inspection smoke run that
+validated the no-time-leak / no-verdict-language guarantees.
 
 ### 6f. Verifier CLIs
 
@@ -438,25 +476,72 @@ smoke run.
 | `python -m verifier.run --claim <file.json> --mode evidence` | Run the agent in evidence mode (default; labeling-safe). |
 | `python -m verifier.run --claim <file.json> --mode verdict` | Run in verdict mode (assigns a verdict; not on the labeling path). |
 | `python -m verifier.run --claim <file.json> --no-cache` | Bypass the SQLite chat-completion cache. |
+| `python -m verifier.eval --gold <jsonl> --claims <csv> --mode evidence --k 8` | Score the agent against a hand-labeled gold set (recall@k, precision, verdict accuracy). Runs `verify()` live per claim. |
 
 ---
 
 ## 7. Workstream D — Evaluation & writeup
 
-Not a code package — a sprint planned for days 6–7 of the workplan. The
-labeling workflow consumes:
+Part code, part human sprint. The scoring scaffolding has landed; the gold set
+it scores against has not yet been produced.
 
-- `data/claims/*.csv` (extractor output)
-- `data/traces/verify_evidence_*.md` (agent evidence, one per claim)
+```mermaid
+flowchart TD
+    claims["data/claims/*.csv"]
+    human["human labelers<br/>(read filings independently<br/>of the agent)"]
+    gold["data/gold/*.jsonl<br/>(GoldLabel rows)"]
+    evalcli["python -m verifier.eval<br/>--gold … --claims … --mode … --k …"]
+    verify["verify() — run live per gold claim"]
+    out["data/eval/per_claim_results.csv<br/>+ stdout summary"]
 
-…and produces a gold set of `(claim_id → verdict + reasoning)`, hand-labeled.
-The gold set then drives:
+    claims --> human
+    human --> gold
+    gold --> evalcli
+    claims --> evalcli
+    evalcli --> verify
+    verify --> evalcli
+    evalcli --> out
+```
 
-- Workstream-C accuracy scoring
-- The chunker/embedding/retriever autoresearcher (see `docs/future_optimizations.md`)
-- Per-firm truthfulness profiles + final paper
+### Code that exists
 
-Format details TBD; the rubric is open item #4 in `CLAUDE.md`.
+| File | Role |
+|---|---|
+| `verifier/gold.py` | `GoldEvidence` / `GoldLabel` schema + `load_gold_labels(path)` JSONL loader. Enforces: non-empty `claim_id`; `verdict ∈ VerdictLabel`; decisive verdicts (`verified`/`partially_verified`/`contradicted`) require non-empty `expected_evidence`. Loader raises with the offending row number rather than dropping bad rows. |
+| `verifier/eval.py` | The scorer. Pure functions `score_retrieval` (recall@k + precision at accession granularity), `score_verdict` (exact verdict match), `aggregate` (means over scorable claims) are unit-tested offline. `python -m verifier.eval` looks each gold claim up in the claims CSV, **runs the agent live** (`verify()`), and scores its output. Claims with no labeled evidence score `None` (not 0) so they don't drag the mean down. |
+| `data/gold/` | `template.jsonl` + `README.md` (labeling how-to + the independence rule). Hand-labeled `pilot_<ticker>.jsonl` files land here. |
+| `data/eval/` | `per_claim_results.csv` written by the eval CLI. |
+
+The eval CLI re-runs `verify()` per claim because the agent's structured output
+is not persisted in the trace; the SQLite chat cache (on by default) keeps
+re-scoring cheap after the first pass.
+
+### Circularity guarantee (load-bearing)
+
+The gold set must be built **independently of the agent's retrieval**. If a
+labeler seeds `expected_evidence` from what the agent surfaced, recall@k is
+circular — the agent is scored against its own output. `data/gold/README.md`
+states the rule. This is why the labeling helper (below) is designed to use
+keyword/regex search, *not* the FAISS index the eval grades.
+
+### Still to do (not yet built / not yet run)
+
+1. **Verdict rubric** — `docs/labeling_rubric.md` is an **empty stub**. It is the
+   prerequisite for *consistent* labels (verdict-bucket definitions +
+   capital-allocation partial-credit policy) and is a team deliverable, not an
+   engineering task. Tracks `CLAUDE.md` open items #3 and #4.
+2. **Agent-free labeling helper** — `docs/labeling-helper-design.md` specs a
+   `verifier.label` CLI that surfaces candidate filings + keyword matches so a
+   human can assemble gold rows quickly without contaminating the eval.
+   **Designed, not built.**
+3. **Pilot labeling sprint** — hand-label ~15–20 TSLA `capital_allocation`
+   claims → `data/gold/pilot_tsla.jsonl`, then run `verifier.eval`. This
+   produces the first "is the verifier any good?" numbers; everything above is
+   scaffolding for it. Whole-team effort, workplan days 6–7.
+
+The gold set, once it exists, also unlocks the chunker/embedding/retriever
+autoresearcher (see `docs/future_optimizations.md`) and the per-firm
+truthfulness profiles + final paper.
 
 ---
 
@@ -470,21 +555,35 @@ Format details TBD; the rubric is open item #4 in `CLAUDE.md`.
   - `OPENAI_API_KEY` — required for extractor + verifier
   - `WRDS_USERNAME` — required for `data_pull`
   - `SEC_USER_AGENT` — recommended (EDGAR fair-access policy)
+  - **Model identifiers (required, no hardcoded fallback — resolvers raise if unset):**
+    - `EXTRACTOR_MODEL` — extractor LLM (a `--model` arg overrides it)
+    - `VERIFIER_AGENT_MODEL` — verifier tool-using agent loop
+    - `VERIFIER_PARSER_MODEL` — verifier structured-output parser
+    - `EMBEDDING_MODEL` — indexer + query embeddings
+  - `.env.example` sets all four (currently all `openai:gpt-4o-mini` /
+    `text-embedding-3-small`); copy it to `.env` to A/B per-stage model choices
+    without code edits.
 - **Tests:**
-  - `mamba run -n truth pytest -v` — 130 offline tests, no API calls
+  - `mamba run -n truth pytest -v` — 160 offline tests, no API calls
   - `mamba run -n truth pytest -v -m live` — 4 live tests, require `OPENAI_API_KEY`
 
 ---
 
-## 9. Where to make iter-3 changes
+## 9. Open work — where future changes land
 
-| Iter-3 area | Files most likely to touch |
-|---|---|
-| Compustat-backed numerical_guidance verification | new `verifier/compustat_tool.py` + wire into `bind_search_filings`-equivalent; lift the `SUPPORTED_CLAIM_TYPES` gate in `agent.py` |
-| Rate-limit / retry layer | `verifier/agent.py` (`init_chat_model` call sites or wrap `verify()`) |
-| `before_date <= call_date` agent bug | `verifier/tools.py` (docstring) and/or `verifier/corpus.py:query` (silently widen) |
-| Cache fragility | `verifier/agent.py:_configure_cache` (cache key versioning or alternate backend) |
-| Externalize models to env vars | per-file getter + `.env.example` + `README.md` (full plan in `docs/future_optimizations.md`) |
-| Chunker autoresearcher | new driver under `src/verifier/` or `scripts/`; sweeps `verifier/index.py:chunk_text` configs against the gold set |
+Outstanding work, with the files each would touch. The first three (rubric,
+labeling helper, pilot sprint) are detailed in §7; the rest is the engineering
+backlog in `docs/future_optimizations.md`.
 
-See `docs/future_optimizations.md` for the full iter-3 backlog with rationale.
+| Open item | Files most likely to touch | Status |
+|---|---|---|
+| Verdict rubric | `docs/labeling_rubric.md` | Empty stub — team deliverable |
+| Agent-free labeling helper | new `verifier/label.py` + `tests/test_label.py` (design in `docs/labeling-helper-design.md`) | Designed, unbuilt |
+| Pilot labeling sprint + first eval numbers | `data/gold/pilot_tsla.jsonl` → `python -m verifier.eval` | Not yet run |
+| Compustat-backed `numerical_guidance` verification | new `verifier/compustat_tool.py`; lift the `SUPPORTED_CLAIM_TYPES` gate in `agent.py` | Out of scope today |
+| Rate-limit / retry layer | wrap `verify()` (tenacity) on top of the existing `max_retries=3` | Backlog |
+| Cache fragility (schema-drift deser errors) | `verifier/agent.py:_configure_cache` (key versioning or alternate backend) | Backlog |
+| `datetime.utcnow()` deprecation | `verifier/agent.py` (`_format_claim_for_agent`) — one-liner | Backlog |
+| Chunker / embedding / retriever autoresearcher | new driver; sweeps `verifier/index.py:chunk_text` + `EMBEDDING_MODEL` configs against the gold set | Gated on the gold set |
+
+See `docs/future_optimizations.md` for the full backlog with rationale.
