@@ -16,9 +16,6 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import date as _date_cls
-from datetime import datetime as _dt_cls
-from datetime import timezone as _timezone
 from pathlib import Path
 from typing import Literal
 
@@ -241,7 +238,7 @@ def verify(
     """
     user_message = _format_claim_for_agent(claim)  # raises on unsupported types
     _configure_cache(cache)
-    tool = bind_search_filings(claim.ticker, claim.call_date)
+    tool = bind_search_filings(claim.ticker, claim.call_date, claim.horizon_end_date)
     agent = build_agent(mode, tools=[tool])
     result = agent.invoke({"messages": [{"role": "user", "content": user_message}]})
 
@@ -277,11 +274,14 @@ class UnsupportedClaimTypeError(ValueError):
     """Raised when verify() is called with a claim_type iter-2 cannot handle."""
 
 
-def _format_claim_for_agent(claim: Claim, *, today: _date_cls | None = None) -> str:
+def _format_claim_for_agent(claim: Claim) -> str:
     """Render the user message the agent loop sees for `claim`.
 
     Deliberately omits the ticker — that's closed over in the tool binding, and
-    naming it in prose would invite the LLM to second-guess the corpus.
+    naming it in prose would invite the LLM to second-guess the corpus. The
+    search window (call-date floor, horizon ceiling) is enforced inside the
+    tool binding too, so the message states it for context but gives the LLM no
+    date knob to turn.
 
     Raises UnsupportedClaimTypeError on numerical_guidance (Compustat deferred
     to iter 3).
@@ -291,13 +291,6 @@ def _format_claim_for_agent(claim: Claim, *, today: _date_cls | None = None) -> 
             f"Iter-2 verifies capital-allocation claims only; "
             f"got claim_type={claim.claim_type!r}. "
             f"Compustat-backed numerical_guidance lands in iter 3."
-        )
-    today = today or _dt_cls.now(_timezone.utc).date()
-    horizon_hint = ""
-    if claim.horizon_end_date is not None and claim.horizon_end_date < today:
-        horizon_hint = (
-            f"\nThe horizon ends {claim.horizon_end_date.isoformat()} — "
-            f"narrow `before_date` accordingly when it helps."
         )
 
     return (
@@ -311,6 +304,6 @@ def _format_claim_for_agent(claim: Claim, *, today: _date_cls | None = None) -> 
         f"{claim.horizon_end_date.isoformat() if claim.horizon_end_date else 'unknown'})\n"
         f"Speaker: {claim.speaker_name or 'unknown'} "
         f"({claim.speaker_type or 'unknown'})\n\n"
-        f"Use search_filings to gather evidence from filings filed after "
-        f"{claim.call_date.isoformat()}.{horizon_hint}"
+        f"Use search_filings to gather evidence. Results are already restricted "
+        f"to filings within this claim's time window."
     )

@@ -58,26 +58,29 @@ def test_format_claim_for_agent_omits_ticker():
     assert "AMZN" not in msg
 
 
-# --- horizon hint ----------------------------------------------------------
+# --- horizon / no date knob ------------------------------------------------
 
-def test_format_claim_for_agent_appends_horizon_hint_when_past_date():
-    """Horizon end date in the past → hint mentioning it."""
+def test_format_claim_for_agent_states_resolved_horizon_for_context():
+    """The resolved horizon end is shown for context, but only as context —
+    the tool enforces it, so there's no `before_date` knob to instruct."""
     c = _claim(horizon_end_date=date(2024, 12, 31))
-    msg = _format_claim_for_agent(c, today=date(2026, 5, 22))
+    msg = _format_claim_for_agent(c)
     assert "2024-12-31" in msg
-    assert "horizon ends" in msg.lower() or "horizon end" in msg.lower()
 
 
-def test_format_claim_for_agent_no_hint_when_horizon_unknown():
+def test_format_claim_for_agent_gives_llm_no_date_knob():
+    """The message must not instruct the LLM to set any date argument — the
+    window is enforced inside the tool binding (closed-over after_date +
+    horizon_end), not driven by the model."""
+    c = _claim(horizon_end_date=date(2024, 12, 31))
+    msg = _format_claim_for_agent(c)
+    assert "before_date" not in msg
+
+
+def test_format_claim_for_agent_handles_unresolved_horizon():
     c = _claim(horizon_end_date=None)
-    msg = _format_claim_for_agent(c, today=date(2026, 5, 22))
-    assert "horizon end" not in msg.lower()
-
-
-def test_format_claim_for_agent_no_hint_when_horizon_in_future():
-    c = _claim(horizon_end_date=date(2099, 1, 1))
-    msg = _format_claim_for_agent(c, today=date(2026, 5, 22))
-    assert "horizon ends" not in msg.lower()
+    msg = _format_claim_for_agent(c)
+    assert "resolved end: unknown" in msg
 
 
 # --- claim content ---------------------------------------------------------

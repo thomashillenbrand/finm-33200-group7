@@ -47,10 +47,12 @@ def test_stringify_evidence_empty_list_message():
 
 # --- bind_search_filings ---------------------------------------------------
 
-def test_bind_search_filings_hides_ticker_and_after_date_from_llm(built_index):
-    """LLM-visible signature must omit `ticker` and `after_date` — closing
-    them over is the load-bearing no-time-leakage guarantee."""
-    tool = bind_search_filings("MINI", date(2024, 1, 1))
+def test_bind_search_filings_hides_time_bounds_from_llm(built_index):
+    """LLM-visible signature must omit every time bound — `ticker`,
+    `after_date`, `horizon_end`, and the retired `before_date`. Closing them
+    over is the load-bearing no-time-leakage guarantee; the LLM gets no date
+    knob to widen."""
+    tool = bind_search_filings("MINI", date(2024, 1, 1), date(2024, 12, 31))
     # Inspect the underlying function's parameters (handle both bare-function
     # and langchain-Tool wrappers):
     fn = getattr(tool, "func", tool)
@@ -58,6 +60,8 @@ def test_bind_search_filings_hides_ticker_and_after_date_from_llm(built_index):
     assert "query" in params
     assert "ticker" not in params
     assert "after_date" not in params
+    assert "horizon_end" not in params
+    assert "before_date" not in params
 
 
 def test_bind_search_filings_callable_returns_string(built_index):
@@ -68,38 +72,23 @@ def test_bind_search_filings_callable_returns_string(built_index):
     assert "[" in result  # has a bracketed header from at least one hit
 
 
-def test_bind_search_filings_call_with_before_date_filter(built_index):
+def test_bind_search_filings_ceilings_by_closed_over_horizon(built_index):
+    """The horizon ceiling is closed over, not an LLM argument. With a horizon
+    of 2024-01-31, only the 10-K (reports 2023-12-31) is in window; the 10-Q
+    (reports 2024-03-31) and 8-K (reports 2024-06-14) are excluded."""
+    tool = bind_search_filings("MINI", date(2020, 1, 1), date(2024, 1, 31))
+    fn = getattr(tool, "func", tool)
+    result = fn(query="share repurchase")
+    assert "2024-06-14" not in result  # 8-K out of horizon
+    assert "2024-04-30" not in result  # 10-Q out of horizon
+    assert "2024-02-20" in result      # 10-K (period 2023-12-31) in horizon
+
+
+def test_bind_search_filings_unbounded_horizon_returns_all(built_index):
+    """horizon_end defaults to None (unresolved horizon) → no upper bound, so
+    every post-call filing is reachable."""
     tool = bind_search_filings("MINI", date(2020, 1, 1))
     fn = getattr(tool, "func", tool)
-    result = fn(query="share repurchase", before_date=date(2024, 3, 1))
-    # 10-K filed 2024-02-20 is the only filing on/before 2024-03-01.
-    # 8-K (2024-06-14) and 10-Q (2024-04-30) should not appear.
-    assert "2024-06-14" not in result
-    assert "2024-04-30" not in result
-
-
-def test_search_tool_widens_when_before_date_equals_after_date(built_index):
-    """When the agent passes a `before_date` equal to the closed-over
-    `after_date`, the window would collapse to a single day and return
-    nothing. The tool layer silently widens by treating `before_date` as
-    None — the agent gets useful evidence back instead of an empty list."""
-    tool = bind_search_filings("MINI", date(2020, 1, 1))
-    fn = getattr(tool, "func", tool)
-    result = fn(query="share repurchase", before_date=date(2020, 1, 1))
-    # Without widen, window is [2020-01-01, 2020-01-01] -> empty.
-    # With widen, all three fixture filings (filed 2024) are in range.
-    assert result != "[no matching filings]"
-    assert "2024" in result
-
-
-def test_search_tool_widens_when_before_date_less_than_after_date(built_index):
-    """Symmetric to the equal case — any `before_date <= after_date` is a
-    non-useful upper bound that the tool layer ignores."""
-    tool = bind_search_filings("MINI", date(2020, 6, 1))
-    fn = getattr(tool, "func", tool)
-    result = fn(query="share repurchase", before_date=date(2020, 3, 1))
-    # Without widen, window is [2020-06-01, 2020-03-01] -> empty.
-    # With widen, after_date=2020-06-01 still floors out, but the upper
-    # bound is dropped, so the 2024 filings pass through.
+    result = fn(query="share repurchase")
     assert result != "[no matching filings]"
     assert "2024" in result

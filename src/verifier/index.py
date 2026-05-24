@@ -193,7 +193,7 @@ def _load_existing_chunks(ticker: str) -> pd.DataFrame:
     p = _index_dir(ticker) / "chunks.parquet"
     if not p.exists():
         return pd.DataFrame(columns=[
-            "chunk_id", "accession_no", "form", "filing_date",
+            "chunk_id", "accession_no", "form", "filing_date", "report_date",
             "local_path", "char_start", "char_end", "text",
         ])
     return pd.read_parquet(p)
@@ -207,12 +207,23 @@ def _chunk_filing(row: pd.Series, sec_root: Path) -> list[dict]:
     html = html_path.read_bytes()
     text = extract_text_from_html(html)
     chunks = chunk_text(text, window_tokens=600, overlap_tokens=100)
+    # reportDate is the fiscal period the filing covers (e.g. a FY2020 10-K
+    # filed 2021-02 reports 2020-12-31); it's the correct horizon bound. Some
+    # filings have no reportDate — fall back to None and let the query layer
+    # use filing_date for those.
+    report_raw = row.get("reportDate")
+    report_date = (
+        pd.to_datetime(report_raw).date()
+        if report_raw is not None and not pd.isna(report_raw)
+        else None
+    )
     return [
         {
             "chunk_id": chunk_id(row["accessionNumber"], c.char_start, c.char_end),
             "accession_no": row["accessionNumber"],
             "form": row["form"],
             "filing_date": pd.to_datetime(row["filingDate"]).date(),
+            "report_date": report_date,
             "local_path": row["localPath"],
             "char_start": c.char_start,
             "char_end": c.char_end,
@@ -330,6 +341,13 @@ def build_index(ticker: str, *, refresh: bool = False) -> None:
     if combined.empty:
         print(f"[index] {ticker}: no chunks produced. Skipping write (no HTML filings indexed).")
         return
+
+    # Backfill report_date for every surviving chunk from the current SEC index.
+    # new_df carries report_date for all current chunk_ids; existing rows reused
+    # from a pre-report_date parquet would otherwise keep NaN. chunk_id is
+    # date-independent, so this re-uses cached vectors — no re-embedding.
+    report_by_id = dict(zip(new_df["chunk_id"], new_df["report_date"]))
+    combined["report_date"] = combined["chunk_id"].map(report_by_id)
 
     # Drop the vector column before writing parquet:
     out_df = combined.drop(columns=["_vec"])

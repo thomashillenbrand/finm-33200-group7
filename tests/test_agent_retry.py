@@ -49,7 +49,8 @@ def stub_agent_stack(monkeypatch):
     # No real backoff in tests — the wait policy is exercised in production only.
     monkeypatch.setattr(agent_mod.verify.retry, "sleep", lambda *_a, **_k: None)
     monkeypatch.setattr(agent_mod, "_configure_cache", lambda enabled: None)
-    monkeypatch.setattr(agent_mod, "bind_search_filings", lambda ticker, after: object())
+    monkeypatch.setattr(agent_mod, "bind_search_filings",
+                        lambda ticker, after, horizon_end=None: object())
     sentinel = EvidenceBundle(items=[])
     monkeypatch.setattr(agent_mod, "_extract_structured", lambda text, mode: sentinel)
 
