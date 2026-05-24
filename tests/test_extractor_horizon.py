@@ -38,6 +38,8 @@ CALL = date(2022, 4, 20)
         ("next 12 months", CALL, ("12 months", date(2023, 4, 20))),
         # half-year
         ("in the second half", CALL, ("H2 2022", date(2022, 12, 31))),
+        ("the first half of next year", CALL, ("H1 2023", date(2023, 6, 30))),
+        ("the second half of next year", CALL, ("H2 2023", date(2023, 12, 31))),
         # bare quarter, no year -- resolves vs the call's own quarter (Q2 2022)
         ("Q3", CALL, ("Q3 2022", date(2022, 9, 30))),
         ("Q1", CALL, ("Q1 2023", date(2023, 3, 31))),

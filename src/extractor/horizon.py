@@ -176,10 +176,14 @@ def resolve_horizon(horizon_raw: str, call_date: date) -> tuple[str, date | None
             return (f"Q{quarter} {year}", date(year, month_num, last_day))
 
     # --- Half-year ---
+    # A "next year" qualifier shifts the half into the following calendar year
+    # ("the first half of next year"); otherwise the half is read in the call's
+    # own year.
+    half_year = call_date.year + 1 if "next year" in text else call_date.year
     if re.search(r"(second|back|latter) half", text) or "h2" in text:
-        return (f"H2 {call_date.year}", date(call_date.year, 12, 31))
+        return (f"H2 {half_year}", date(half_year, 12, 31))
     if re.search(r"(first|front) half", text) or "h1" in text:
-        return (f"H1 {call_date.year}", date(call_date.year, 6, 30))
+        return (f"H1 {half_year}", date(half_year, 6, 30))
 
     # --- Relative year ---
     if "next year" in text or "coming year" in text:

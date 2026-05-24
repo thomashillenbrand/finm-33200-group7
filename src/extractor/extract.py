@@ -205,16 +205,22 @@ def filter_unquantified_guidance(claims: list[Claim]) -> list[Claim]:
 
 
 def filter_unresolved_horizon(claims: list[Claim]) -> list[Claim]:
-    """Drop claims whose horizon could not be resolved to an end date.
+    """Drop claims whose horizon is unusable for verification.
 
-    A claim with ``horizon_end_date is None`` cannot be checked against a
-    specific filing period, so it is unverifiable and is pruned here. This
-    applies to *both* claim types: per the workstream-B scope decision an
-    unresolved horizon makes a claim ungradable regardless of type. The raw
-    horizon wording the model gave is kept on the claims that survive, for
-    audit; only the unresolvable ones are dropped.
+    A claim is dropped when its horizon either (a) could not be resolved to an
+    end date at all, or (b) resolved to a date on or before the call date.
+    Both leave workstream C with no valid filing window: a forward-looking
+    claim must point *past* the call, so a horizon ending at or before it
+    signals either an unresolved phrase or a mis-extracted past-result
+    statement ("in 2021 we incurred...", "since 2020 we have committed..."). The
+    rule is a blanket one, applied to both claim types. The raw horizon wording
+    is kept on every surviving claim for audit; only the unusable ones drop.
     """
-    return [c for c in claims if c.horizon_end_date is not None]
+    return [
+        c
+        for c in claims
+        if c.horizon_end_date is not None and c.horizon_end_date > c.call_date
+    ]
 
 
 def dedupe_claims(claims: list[Claim]) -> list[Claim]:
@@ -249,9 +255,13 @@ def dedupe_similar_claims(claims: list[Claim]) -> list[Claim]:
     verbatim wording -- a different quote, hence a different ``claim_id`` --
     which that pass cannot catch (a pilot showed two copies of one claim
     surviving). This pass drops a claim when an earlier kept claim shares its
-    *located* source turn and claim type and has a near-identical quote.
-    Claims from different turns, and unlocated claims (``component_id`` 0), are
-    never merged.
+    *located* source turn and claim type and either has a near-identical quote
+    *or* has a quote that fully contains, or is contained by, this claim's
+    quote. The substring case matters because the model often emits one claim
+    as a sub-span of another from the same sentence ("...$2 billion in capex"
+    vs "...$2 billion in capex, which we will fund from cash") -- a containment
+    that a similarity *ratio* scores low when the lengths differ. Claims from
+    different turns, and unlocated claims (``component_id`` 0), are never merged.
     """
     kept: list[Claim] = []
     for claim in claims:
@@ -263,10 +273,13 @@ def dedupe_similar_claims(claims: list[Claim]) -> list[Claim]:
                 and earlier.component_id == claim.component_id
                 and earlier.claim_type == claim.claim_type
             ):
-                ratio = difflib.SequenceMatcher(
-                    None, _quote_key(earlier.verbatim_quote), key
-                ).ratio()
-                if ratio >= _SIMILAR_QUOTE_THRESHOLD:
+                earlier_key = _quote_key(earlier.verbatim_quote)
+                ratio = difflib.SequenceMatcher(None, earlier_key, key).ratio()
+                if (
+                    ratio >= _SIMILAR_QUOTE_THRESHOLD
+                    or key in earlier_key
+                    or earlier_key in key
+                ):
                     is_dup = True
                     break
         if not is_dup:

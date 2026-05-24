@@ -158,3 +158,35 @@ def test_filter_unresolved_horizon_keeps_only_the_resolved_claim():
     ]
     kept = filter_unresolved_horizon(claims)
     assert [c.claim_type for c in kept] == ["numerical_guidance"]
+
+
+def test_filter_unresolved_horizon_drops_horizon_on_or_before_call_date():
+    """A horizon resolving to the call date or earlier leaves no filing window
+    -- it is a mis-extracted past-result claim or a wrong horizon phrase, and
+    is dropped just like an unresolved horizon. The call date here is
+    2024-01-24 (see ``_claim``)."""
+    claims = [
+        _claim(
+            "numerical_guidance",
+            "In 2023 we spent $2 billion.",
+            horizon_end=date(2023, 12, 31),   # before the call
+        ),
+        _claim(
+            "capital_allocation",
+            "Q1 capex was $1 billion.",
+            horizon_end=date(2024, 1, 24),    # exactly the call date
+        ),
+    ]
+    assert filter_unresolved_horizon(claims) == []
+
+
+def test_filter_unresolved_horizon_keeps_horizon_one_day_after_call():
+    """A horizon ending the day after the call is a valid forward window."""
+    claims = [
+        _claim(
+            "numerical_guidance",
+            "Revenue will be $24 billion.",
+            horizon_end=date(2024, 1, 25),    # one day after the call
+        ),
+    ]
+    assert len(filter_unresolved_horizon(claims)) == 1

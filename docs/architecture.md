@@ -294,12 +294,13 @@ flowchart TD
 
 - Numerical-guidance claims with no stated figure
   (`filter_unquantified_guidance`).
-- Claims whose horizon could not be resolved to an end date
-  (`filter_unresolved_horizon`) — a blanket prune across **both** claim types,
-  since an unresolvable horizon leaves workstream C with no filing window.
+- Claims with no usable forward horizon (`filter_unresolved_horizon`) — a
+  blanket prune across **both** claim types covering both an unresolved horizon
+  and one that resolves to a date on or before the call date (a mis-extracted
+  past-result statement); either leaves workstream C with no filing window.
 - Exact-duplicate claims across calls (`dedupe_claims`).
-- Same-turn near-duplicates (`difflib.SequenceMatcher >= 0.88`,
-  `dedupe_similar_claims`).
+- Same-turn near-duplicates (`difflib.SequenceMatcher >= 0.88` **or** one quote
+  being a substring of the other, `dedupe_similar_claims`).
 - Capital-allocation claims without a stated figure are **kept**: a buyback
   announcement with no dollar amount is still a claim.
 
