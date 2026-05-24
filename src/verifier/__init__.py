@@ -5,7 +5,7 @@ Public surface:
   verify, verify_from_dict                       — run the agent on one claim
 """
 
-from schemas import Claim, EvidenceItem, EvidenceBundle, Verdict
+from schemas import Claim, EvidenceBundle, EvidenceItem, Verdict
 from verifier.agent import verify, verify_from_dict
 
 __all__ = [

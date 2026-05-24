@@ -7,6 +7,6 @@ Remove this file once `src/extractor_2/schema.py` and
 See iter-2 design's Open Items #6.
 """
 
-from schemas import Claim, ClaimType, EvidenceItem, EvidenceBundle, Verdict
+from schemas import Claim, ClaimType, EvidenceBundle, EvidenceItem, Verdict
 
 __all__ = ["Claim", "ClaimType", "EvidenceItem", "EvidenceBundle", "Verdict"]

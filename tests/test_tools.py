@@ -5,11 +5,11 @@ from datetime import date
 
 import pytest
 
-from verifier.tools import (
-    bind_search_filings,
-    _stringify_evidence,
-)
 from schemas import EvidenceItem
+from verifier.tools import (
+    _stringify_evidence,
+    bind_search_filings,
+)
 
 
 def _ev(form="10-Q", filing_date=date(2024, 4, 30), score=0.7,

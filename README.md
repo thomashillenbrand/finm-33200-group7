@@ -236,6 +236,13 @@ Two layers:
   via `langchain_community.cache.SQLiteCache`. **On by default.** Pass
   `--no-cache` on the CLI to bypass for a single run.
 
+> **Troubleshooting — stale-cache crash.** Cache entries are keyed on the
+> prompt + model, not on the structured-output schema. If you edit the
+> `EvidenceBundle`/`Verdict` schema (or the parser prompt) and then re-run a
+> claim you've run before, a cache *hit* can fail to deserialize with
+> `ValueError: ... does not have a 'parsed' field`. Fix: re-run with
+> `--no-cache`, or delete `pulled_data/.cache/llm_cache.sqlite` to start fresh.
+
 Query embeddings (one per `search_filings` call) are not separately cached;
 they're recomputed each time. This is a known iter-3 backlog item — see
 `docs/future_optimizations.md`.
