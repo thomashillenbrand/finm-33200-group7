@@ -39,7 +39,7 @@ from schemas import Claim
 from verifier.gold import GoldEvidence, GoldLabel
 
 # Root for data_pull's per-ticker output; gold-set directory. Both patchable.
-PULLED_DATA_ROOT = Path("Pulled_data")
+PULLED_DATA_ROOT = Path("pulled_data")
 GOLD_DIR = Path("data/gold")
 
 _FORMS: tuple[str, ...] = ("10-K", "10-Q", "8-K")

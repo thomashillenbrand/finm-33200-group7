@@ -12,7 +12,6 @@ importing them eagerly would load the agent stack (deepagents, faiss) on every
 """
 
 from schemas import Claim, EvidenceBundle, EvidenceItem, Verdict
-from verifier.agent import verify, verify_from_dict
 
 __all__ = [
     "Claim",
