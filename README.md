@@ -31,14 +31,23 @@ finm-33200-group7/
 │   │   ├── extract.py         # build_extractor, extract_call, filter_unquantified_guidance, dedupe_claims
 │   │   ├── output.py          # writes the claims CSV
 │   │   └── run.py             # CLI: python -m extractor.run --input ... --output ...
-│   └── verifier/              # workstream C — verification agent (iteration 1: stubbed tools)
-│       ├── __init__.py        # re-exports the public API
-│       ├── schema.py          # Pydantic models: Claim, EvidenceItem, EvidenceBundle, Verdict
-│       ├── corpus.py          # iteration-1 stub: loads canned excerpts from data/stub/
-│       ├── tools.py           # search_filings tool (stubbed; real EDGAR in iteration 2)
-│       ├── trace.py           # JSON+Markdown trace writer (adapted from agentic-rag-edgar-demo)
-│       ├── agent.py           # build_agent, verify, verify_from_dict
-│       └── run.py             # CLI: python -m verifier.run --claim ... --mode {evidence,verdict}
+│   ├── verifier/              # workstream C — verification agent (iteration 1: stubbed tools)
+│   │   ├── __init__.py        # re-exports the public API
+│   │   ├── schema.py          # Pydantic models: Claim, EvidenceItem, EvidenceBundle, Verdict
+│   │   ├── corpus.py          # iteration-1 stub: loads canned excerpts from data/stub/
+│   │   ├── tools.py           # search_filings tool (stubbed; real EDGAR in iteration 2)
+│   │   ├── trace.py           # JSON+Markdown trace writer (adapted from agentic-rag-edgar-demo)
+│   │   ├── agent.py           # build_agent, verify, verify_from_dict
+│   │   └── run.py             # CLI: python -m verifier.run --claim ... --mode {evidence,verdict}
+│   └── autochecker/           # workstream C iter-3 — Compustat-backed numerical grader
+│       ├── __init__.py        # package docstring
+│       ├── schema.py          # Pydantic: ScreenResult, EvidenceResult, VerdictResult, AutocheckRecord
+│       ├── compustat.py       # parquet loader, YTD→quarterly delta, pre/post-call slicing, field codebook
+│       ├── prompts.py         # versioned stage-1 + stage-2 prompts (evidence/verdict variants)
+│       ├── llm.py             # raw OpenAI SDK structured-output wrapper + rate-limit retry
+│       ├── screen.py          # stage 1: Compustat-relevance screen
+│       ├── verify.py          # stage 2: verification, citation scrubbing
+│       └── run.py             # CLI: python -m autochecker.run --claims ... --mode {evidence,verdict}
 ├── tests/
 │   ├── test_extractor_*.py    # extractor tests: schema, reader, horizon, provenance, filter, dedupe, output, smoke
 │   ├── test_schema.py         # verifier Pydantic schema tests
@@ -49,6 +58,7 @@ finm-33200-group7/
 │   ├── Transcript/            # interim transcript CSVs (4 firms; superseded by Pulled_data/ parquet)
 │   ├── claims/                # extractor output — claims CSVs
 │   ├── stub/                  # canned fixtures (example_claim.json + canned_excerpts.json)
+│   ├── autochecker/           # autochecker run outputs — per-claim JSONL + flat summary CSV
 │   └── traces/                # per-run agent traces (gitignored)
 ├── pulled_data/               # data_pull output: per-ticker transcripts, Compustat, SEC filings (gitignored)
 └── docs/                      # design docs and other supporting material
@@ -270,6 +280,84 @@ read at use time, so a change takes effect on the next run.
 
 The extractor additionally honors `--model` / `model_name=`, which wins over
 `EXTRACTOR_MODEL`. `.env.example` is the canonical list.
+
+## Compustat verification (workstream C, iter-3)
+
+The `autochecker` package grades `numerical_guidance` claims against Compustat
+quarterly fundamentals — the half of workstream C that iter-2 deferred (iter-2
+locked scope to `capital_allocation` against SEC filings and raised
+`UnsupportedClaimTypeError` on numerical claims). Two-stage flow per claim:
+
+- **Stage 1 — screen.** One LLM call asks: does this claim assert a direction
+  or magnitude about a figure that appears in Compustat? A codebook of 39
+  fields (revenue, income, balance-sheet items, plus per-quarter deltas
+  derived from the YTD cash-flow columns) is included in the prompt. Returns
+  `is_compustat_relevant`, `candidate_fields`, `assertion_kind`, and a one-
+  sentence reasoning. Operational / qualitative claims are filtered here.
+- **Stage 2 — verify.** For claims the screen accepted *and* that carry a
+  resolved `horizon_end_date`, the loader builds a panel slice
+  (`call_date < datadate ≤ horizon_end_date`) plus four pre-call quarters as
+  a YoY baseline, projects down to the stage-1 candidate fields, and asks
+  the LLM to either surface citations + a neutral comparison paragraph
+  (`--mode evidence`, default) or to also emit a verdict label
+  (`--mode verdict`). Citations are scrubbed against the actual sliced panel
+  so hallucinated `(datadate, field)` pointers are dropped before write.
+
+The package uses the **raw OpenAI SDK** (`client.beta.chat.completions.parse`
+with Pydantic schemas), not LangChain — autochecker has no agent loop or
+chat-completion cache to integrate with, and skipping the LangChain layer
+keeps it runnable inside the `sec_filings` conda env without extra installs.
+Model id is read from `VERIFIER_AGENT_MODEL` in `.env` (the `openai:` prefix
+is stripped automatically, so the same value works across stages).
+
+### Run it
+
+```bash
+# default: evidence mode on the full 590-claim pilot
+python -m autochecker.run --claims data/claims/51_full_run.csv
+
+# verdict mode (opt-in — see caveat below)
+python -m autochecker.run --claims data/claims/51_full_run.csv --mode verdict
+
+# smoke run: first N claims, single ticker
+python -m autochecker.run --claims data/claims/51_full_run.csv \
+    --mode evidence --tickers TSLA --limit 5
+```
+
+Each run writes two files under `data/autochecker/`:
+
+- `<stem>_<mode>_autochecker-v1.jsonl` — one JSON object per claim with the
+  full stage-1 result, the stage-2 evidence/verdict payload, and the model
+  + mode used. This is the audit artifact.
+- `<stem>_<mode>_autochecker-v1.csv` — a flat per-claim summary (no
+  citations, no reasoning text) for spreadsheet inspection.
+
+The CLI prints per-claim progress (`[i/N] <claim_id> (TICKER) -> screen=...
+stage2=...`) and is idempotent at the level of the output files (re-running
+overwrites).
+
+### Time-leak guarantee
+
+Stage 2's slicer applies a strict `>` cutoff on `datadate` against the call
+date, so the LLM never sees a Compustat row that ended on or before the
+call. Four pre-call quarters are included separately and clearly labelled
+as "base period" in the prompt — they were already public when the claim
+was made, so surfacing them as a YoY baseline is not a time leak.
+
+### Caveats
+
+- **`--mode verdict` is opt-in for a reason.** Structured-output runs
+  occasionally have the model's free-text `reasoning` field disagree with
+  the structured `verdict` field (e.g. reasoning concludes "partially_verified"
+  while `verdict` emits "verified"). Spot-check `reasoning` before trusting
+  the labels, and do **not** feed `data/autochecker/*verdict*` into gold-set
+  labeling without a hand-audit.
+- The load-bearing labeling pattern (agent surfaces evidence, humans assign
+  verdicts) means `--mode evidence` is the default for a reason — keep it
+  unless you explicitly need labels.
+- Claims with `horizon_end_date` missing are skipped at stage 2 with
+  `skipped_reason="no_horizon"` rather than guessed; this avoids judging a
+  claim against an arbitrary window.
 
 ## Gold-set evaluation (workstream D)
 
