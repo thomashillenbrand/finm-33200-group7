@@ -163,8 +163,8 @@ Every claim is classified as either `numerical_guidance` (graded against
 Compustat) or `capital_allocation` (share buybacks, dividends, capex, and debt
 actions — graded against SEC filings), and carries its verbatim quote, a
 paraphrase, provenance (source turn + speaker), a resolved horizon, and a
-`source_context` field (the source turn plus the turns immediately before and
-after it, so a sparse quote can be read in context). By design the schema
+`source_context` field (the source turn plus the turn immediately before it,
+so a sparse quote can be read in context). By design the schema
 holds no verdict or outcome field: the extractor surfaces claims, the verifier
 surfaces evidence, and human labelers assign verdicts.
 

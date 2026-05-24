@@ -1,9 +1,9 @@
 """Tests for the source-context column (workstream B).
 
-``_source_context`` gives workstream C the source turn plus the turns
-immediately before and after it (same call), so a sparse ``verbatim_quote``
-can be read in context -- notably, a Q&A answer's preceding turn is the
-analyst's question. ``_enrich`` writes the result to ``Claim.source_context``.
+``_source_context`` gives workstream C the source turn plus the turn
+immediately before it (same call), so a sparse ``verbatim_quote`` can be read
+in context -- notably, a Q&A answer's preceding turn is the analyst's
+question. ``_enrich`` writes the result to ``Claim.source_context``.
 """
 
 from datetime import date, datetime, timezone
@@ -62,24 +62,25 @@ def _call(turns: list[Turn] | None = None) -> EarningsCall:
     )
 
 
-def test_source_context_includes_previous_and_next_turn():
-    """For a mid-call turn, the context is the previous, source, and next turn."""
+def test_source_context_includes_the_previous_turn():
+    """For a mid-call turn, the context is the previous turn and the source
+    turn -- the following turn is not included."""
     context = _source_context(_call(), component_id=30)
     assert "What are you expecting for capital expenditure" in context  # previous
     assert "$4 billion on capex" in context                            # source
-    assert "how should we think about the dividend" in context         # next
+    assert "how should we think about the dividend" not in context     # next excluded
 
 
 def test_source_context_clamps_at_call_start():
-    """The first turn has no predecessor -- context is just it and its successor."""
+    """The first turn has no predecessor -- context is just the turn itself."""
     context = _source_context(_call(), component_id=10)
     assert "first question comes from the line" in context   # source (turn 1)
-    assert "capital expenditure next year" in context        # next (turn 2)
-    assert "$4 billion" not in context                       # turn 3 excluded
+    assert "capital expenditure next year" not in context    # turn 2 excluded
 
 
-def test_source_context_clamps_at_call_end():
-    """The last turn has no successor -- context is its predecessor and it."""
+def test_source_context_for_the_last_turn():
+    """The last turn still gets its predecessor -- there is nothing to clamp at
+    the end now that the following turn is no longer included."""
     context = _source_context(_call(), component_id=40)
     assert "$4 billion on capex" in context                  # previous (turn 3)
     assert "how should we think about the dividend" in context  # source (turn 4)
@@ -99,9 +100,9 @@ def test_source_context_empty_for_unknown_component_id():
 def test_source_context_labels_each_turn_with_speaker_and_type():
     """Each turn in the context is prefixed with its speaker and component type."""
     context = _source_context(_call(), component_id=30)
-    assert "Pat Lee (Question):" in context
-    assert "Jane Doe (Answer):" in context
-    assert "Sam Roe (Question):" in context
+    assert "Pat Lee (Question):" in context      # previous
+    assert "Jane Doe (Answer):" in context       # source
+    assert "Sam Roe (Question):" not in context  # following turn not included
 
 
 def test_enrich_populates_source_context_with_the_question_turn():
@@ -153,9 +154,9 @@ def test_source_context_is_single_line():
 
 
 def test_source_context_joins_turns_with_a_visible_marker():
-    """The three turns are separated by a `` || `` marker, not a newline."""
+    """The two turns are separated by a `` || `` marker, not a newline."""
     context = _source_context(_call(), component_id=30)
-    assert context.count(" || ") == 2  # three turns -> two separators
+    assert context.count(" || ") == 1  # two turns -> one separator
 
 
 def test_source_context_collapses_newlines_inside_a_turn():

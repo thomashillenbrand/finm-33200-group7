@@ -124,10 +124,19 @@ def resolve_horizon(horizon_raw: str, call_date: date) -> tuple[str, date | None
             end = _add_months(call_date, count)
             return (f"{count} months", end)
 
-    # --- Relative span in years: "next three years", "three year plan" ---
-    m = re.search(r"next (\w+) years?", text) or re.search(r"(\w+) years?", text)
+    # --- Relative span in years: "next three years", "1.5 year plan" ---
+    # A fractional count ("1.5 years") is resolved through months so it is not
+    # mistaken for a whole-year span: a plain ``\w+`` capture cannot hold the
+    # dot, so it would grab the "5" out of "1.5" and land five years out.
+    m = re.search(r"next ([\d.]+|\w+) years?", text) or re.search(
+        r"([\d.]+|\w+) years?", text
+    )
     if m:
-        count = _as_count(m.group(1))
+        token = m.group(1)
+        if re.fullmatch(r"\d+\.\d+", token):
+            months = round(float(token) * 12)
+            return (f"{months} months", _add_months(call_date, months))
+        count = _as_count(token)
         if count:
             year = call_date.year + count
             return (f"FY{year}", date(year, 12, 31))

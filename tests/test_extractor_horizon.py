@@ -31,6 +31,9 @@ CALL = date(2022, 4, 20)
         ("the rest of the year", CALL, ("FY2022", date(2022, 12, 31))),
         # relative multi-year
         ("over the next three years", date(2021, 7, 26), ("FY2024", date(2024, 12, 31))),
+        # relative fractional-year span -- resolved via months, not FY+5
+        ("over the next 1.5 years", date(2020, 7, 22), ("18 months", date(2022, 1, 22))),
+        ("over the next 3.5 years", CALL, ("42 months", date(2025, 10, 20))),
         # relative months
         ("next 12 months", CALL, ("12 months", date(2023, 4, 20))),
         # half-year

@@ -99,12 +99,13 @@ def build_extractor(model_name: str | None = None):
 
 
 def _source_context(call: EarningsCall, component_id: int) -> str:
-    """The source turn plus the turns immediately before and after it.
+    """The source turn plus the turn immediately before it.
 
     Gives workstream C enough surrounding text to understand a sparse quote --
     notably, for a Q&A answer the preceding turn is the analyst's question.
-    Neighbours are taken from the call's full turn order (analyst and operator
-    turns included). Empty when the quote could not be located to a turn.
+    The preceding turn is taken from the call's full turn order (analyst and
+    operator turns included). Empty when the quote could not be located to a
+    turn.
 
     The result is single-line: each turn's text has its internal whitespace
     (newlines included) collapsed to single spaces, and the turns are joined
@@ -121,7 +122,7 @@ def _source_context(call: EarningsCall, component_id: int) -> str:
     )
     if idx is None:
         return ""
-    lo, hi = max(0, idx - 1), min(len(turns), idx + 2)
+    lo, hi = max(0, idx - 1), idx + 1
     return " || ".join(
         " ".join(f"{t.speaker_name} ({t.component_type}): {t.text}".split())
         for t in turns[lo:hi]

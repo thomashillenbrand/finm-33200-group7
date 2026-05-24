@@ -57,9 +57,9 @@ class Claim(BaseModel):
     summary: str = Field(min_length=1)
     source_context: str = Field(
         default="",
-        description="The source turn plus the turns immediately before and "
-        "after it (same call), so a sparse verbatim_quote can be understood "
-        "in context. Empty if the quote could not be located to a turn.",
+        description="The source turn plus the turn immediately before it "
+        "(same call), so a sparse verbatim_quote can be understood in "
+        "context. Empty if the quote could not be located to a turn.",
     )
 
     # --- Horizon: raw wording kept for audit, plus a resolved period/date ---
