@@ -15,13 +15,20 @@ model misclassifies among buyback/dividend/capex/debt. Scope guards are hardened
 with negative examples drawn from the pilot's actual errors (product pricing,
 delivery plans, product specs, vague liquidity sentiment, figure-less directional
 statements).
+
+v5 (after the gpt-5.1 pilot): scope guards extended to the leakage that pilot
+surfaced -- clinical-trial / R&D / regulatory milestones, per-product supply or
+manufacturing volumes, ESG / sustainability targets, and charitable pledges --
+none of which are company financial metrics or capital actions. Adds a guard
+that free cash flow and cash from operations are numerical_guidance, not
+capital allocation.
 """
 
 from __future__ import annotations
 
 from datetime import date
 
-PROMPT_VERSION = "b-extract-v4"
+PROMPT_VERSION = "b-extract-v5"
 
 SYSTEM_PROMPT = """You extract forward-looking management claims from earnings call transcripts.
 
@@ -45,7 +52,10 @@ MUST contain a specific figure: a number, percentage, dollar amount, or range \
 figure ("revenue will grow", "margins should improve") is NOT numerical \
 guidance. A product specification is NOT a financial or operating metric -- a \
 vehicle's driving range, a battery's energy density, a device's speed and the \
-like are product specs, not guidance, even when stated as numbers.
+like are product specs, not guidance, even when stated as numbers. The metric \
+must be reported at the company level (or a major reporting segment) -- the \
+output of a single product or program, such as units of one product or doses \
+of one drug, is operational detail, not numerical guidance.
 
    - capital_allocation: a plan or commitment about how the company will DEPLOY \
 CAPITAL. That means one of: repurchasing its own shares; initiating, raising, \
@@ -75,10 +85,33 @@ must be a concrete, checkable plan or a quantitative expectation.
    - Strategy, operations, or product commentary with no figure and no \
 capital action.
    - Accounting changes framed as an operating-income effect.
+   - Clinical-trial, R&D, and regulatory milestones -- trial enrollment or \
+readouts, data presentations at medical or scientific meetings, regulatory \
+filings or submissions, and approval timelines. These are pipeline events, not \
+financial guidance or capital actions, even when a count or a date is attached \
+("two readouts this year", "we plan to submit by year-end").
+   - Product-supply or manufacturing-volume commitments for a specific product \
+or program -- e.g. "we will have one million doses of our antibody available". \
+A company-level headline metric can be guidance; the quantity of one product \
+or program is operational detail.
+   - Environmental, social, governance, or sustainability targets -- \
+recycled-content percentages, emissions goals, diversity targets and the like. \
+They are not company financial or operating metrics.
+   - Charitable, philanthropic, or social-impact pledges -- donations, \
+volunteer-hour commitments, community investments. A dollar figure does not \
+make these capital allocation; capital allocation is buybacks, dividends, \
+capex, or debt only.
 
 Note: paying down or repaying debt (including convertible notes) is \
 capital_allocation even when a dollar figure is attached -- it is a debt \
 action, not numerical guidance.
+
+Note: free cash flow and cash from operations are numerical_guidance -- they \
+are financial metrics, not capital actions. Capital allocation is how capital \
+is DEPLOYED (buybacks, dividends, capex, debt), not how cash is generated. A \
+sentence that gives both ("$8 billion of free cash flow, including $2 billion \
+of capital expenditure") is split: the cash-flow figure is numerical_guidance, \
+the capex figure is capital_allocation.
 
 VERBATIM QUOTES -- this is critical:
    - verbatim_quote MUST be copied from the transcript EXACTLY: every \
@@ -143,6 +176,16 @@ OUT-OF-SCOPE EXAMPLES -- skip every one of these:
 sentiment, not a concrete plan)
    "We plan to keep investing in our brand and customer experience."  \
 (strategy commentary, no figure, no capital action)
+   "We expect two important clinical readouts before the end of the year."  \
+(clinical / pipeline milestone)
+   "We plan to submit these data to regulators around the world by year-end."  \
+(regulatory submission)
+   "We will have over one million additional doses of our antibody available \
+by mid-2021."  (per-product supply volume)
+   "We project 50% recycled plastic in our bottles by 2023."  (sustainability \
+target)
+   "We are pledging $25 million and 25,000 employee volunteer hours over the \
+next five years."  (philanthropic pledge)
 
 WORKED EXAMPLE -- a compound sentence split into atomic claims
 Input:

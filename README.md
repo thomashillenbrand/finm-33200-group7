@@ -28,7 +28,7 @@ finm-33200-group7/
 │   │   ├── horizon.py         # resolves claim time horizons to absolute dates
 │   │   ├── prompt.py          # extraction system prompt + few-shot examples
 │   │   ├── provenance.py      # matches an extracted quote back to its source turn
-│   │   ├── extract.py         # build_extractor, extract_call, filter_unquantified_guidance, dedupe_claims
+│   │   ├── extract.py         # build_extractor, extract_call, filter_unquantified_guidance, filter_unresolved_horizon, dedupe_claims
 │   │   ├── output.py          # writes the claims CSV
 │   │   └── run.py             # CLI: python -m extractor.run --input ... --output ...
 │   └── verifier/              # workstream C — verification agent (real EDGAR retrieval + FAISS)
@@ -41,7 +41,7 @@ finm-33200-group7/
 │       ├── agent.py           # build_agent, verify, verify_from_dict
 │       └── run.py             # CLI: python -m verifier.run --claim ... --mode {evidence,verdict}
 ├── tests/
-│   ├── test_extractor_*.py    # extractor tests: schema, reader, horizon, provenance, filter, dedupe, output, smoke
+│   ├── test_extractor_*.py    # extractor tests: schema, reader, horizon, provenance, filter, dedupe, context, output, smoke
 │   ├── test_schema.py         # verifier Pydantic schema tests
 │   ├── test_corpus.py         # verifier stub corpus loader test
 │   ├── test_tools.py          # verifier search_filings stub test
@@ -153,16 +153,20 @@ workstreams C and D to consume. Capital IQ stores each call as several
 transcript versions, so the reader first keeps only the final, proofed copy of
 each call. For every earnings call it then makes one OpenAI structured-output
 request, recovers each claim's source turn by matching the quote back to the
-transcript, resolves claim time horizons to absolute dates, drops
-numerical-guidance claims that state no specific figure, and removes
-exact-duplicate claims.
+transcript, resolves claim time horizons to absolute dates (absolute and
+relative phrasings, plus bare quarters like `Q2` and bare months like `by the
+end of March`), drops numerical-guidance claims that state no specific figure,
+prunes any claim whose horizon could not be resolved to an end date, and
+removes exact-duplicate claims.
 
 Every claim is classified as either `numerical_guidance` (graded against
 Compustat) or `capital_allocation` (share buybacks, dividends, capex, and debt
 actions — graded against SEC filings), and carries its verbatim quote, a
-paraphrase, provenance (source turn + speaker), and a resolved horizon. By
-design the schema holds no verdict or outcome field: the extractor surfaces
-claims, the verifier surfaces evidence, and human labelers assign verdicts.
+paraphrase, provenance (source turn + speaker), a resolved horizon, and a
+`source_context` field (the source turn plus the turn immediately before it,
+so a sparse quote can be read in context). By design the schema
+holds no verdict or outcome field: the extractor surfaces claims, the verifier
+surfaces evidence, and human labelers assign verdicts.
 
 Run it with the CLI:
 
@@ -199,9 +203,9 @@ excerpts without proposing a verdict.
 > prior Dec 31) is still graded against an annual claim. This replaces the old
 > LLM-visible `before_date` argument and adds a `report_date` column to
 > `chunks.parquet`; **indexes built before this change must be rebuilt** (see
-> below). A claim with no resolved horizon (`horizon_end_date` null) has no
-> ceiling and will reach recent filings — pending the extractor's bare-quarter
-> horizon resolution.
+> below). A claim with no resolved horizon (`horizon_end_date` null) would have
+> no ceiling — but as of 2026-05-24 the extractor prunes such claims upstream
+> (`filter_unresolved_horizon`), so the verifier no longer receives one.
 
 ### Prerequisites
 
