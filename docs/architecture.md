@@ -128,6 +128,7 @@ classDiagram
       +str verbatim_quote
       +bool quote_verbatim
       +str summary
+      +str source_context
       +str horizon_raw
       +str horizon_period
       +date? horizon_end_date
@@ -270,7 +271,8 @@ flowchart TD
     raw --> enrich["extract._enrich()<br/>+ provenance.locate_quote()<br/>+ horizon.resolve_horizon()"]
     enrich --> claims["list[Claim]"]
     claims --> f1["filter_unquantified_guidance"]
-    f1 --> f2["dedupe_claims"]
+    f1 --> fh["filter_unresolved_horizon"]
+    fh --> f2["dedupe_claims"]
     f2 --> f3["dedupe_similar_claims"]
     f3 --> writer["output.write_claims_csv()"]
     writer --> out["data/claims/<name>.csv"]
@@ -280,11 +282,11 @@ flowchart TD
 
 | File | Role | Key entry points |
 |---|---|---|
-| `extract.py` | The end-to-end driver per call/transcript. `build_extractor`, `extract_call`, `extract_transcript`, `filter_unquantified_guidance`, `dedupe_*`. Model from `_resolve_extractor_model(explicit)`: a `--model` arg wins, else the `EXTRACTOR_MODEL` env var; no hardcoded fallback (raises if neither is set). |
+| `extract.py` | The end-to-end driver per call/transcript. `build_extractor`, `extract_call`, `extract_transcript`, `filter_unquantified_guidance`, `filter_unresolved_horizon`, `dedupe_*`; `_source_context` builds the `source_context` field. Model from `_resolve_extractor_model(explicit)`: a `--model` arg wins, else the `EXTRACTOR_MODEL` env var; no hardcoded fallback (raises if neither is set). |
 | `reader.py` | Reads the WRDS transcript parquet, collapses Capital IQ's multiple proofed versions to the final per-call copy, exposes `EarningsCall` + `Turn` dataclasses. `load_calls`, `build_call_input`. |
 | `prompt.py` | System + user prompt templates and the `PROMPT_VERSION` string that gets stamped on every `Claim`. `build_user_prompt`. |
 | `provenance.py` | `locate_quote(turns, quote)` — back-matches the model's `verbatim_quote` to a source turn so we know who said it (model-reported ids were unreliable in the pilot, so we recover them ourselves). |
-| `horizon.py` | `resolve_horizon(raw, call_date)` — turn "FY2024", "next quarter", "by end of 2025", etc. into `(period_label, end_date)`. |
+| `horizon.py` | `resolve_horizon(raw, call_date)` — turn "FY2024", "next quarter", "by end of 2025", bare quarters ("Q2", resolved to the next valid Q2 vs. the call date), bare months ("by the end of March"), etc. into `(period_label, end_date)`. Returns `("", None)` when nothing resolves. |
 | `output.py` | `write_claims_csv(claims, path)` — single source of truth for column order (uses `schemas.CSV_FIELDS`). |
 | `run.py` | argparse CLI. Supports `--input` as a single parquet *or* a directory (recursive `*_transcripts.parquet`), `--limit` for the day-4 pilot, `--model` override. |
 
@@ -292,6 +294,9 @@ flowchart TD
 
 - Numerical-guidance claims with no stated figure
   (`filter_unquantified_guidance`).
+- Claims whose horizon could not be resolved to an end date
+  (`filter_unresolved_horizon`) — a blanket prune across **both** claim types,
+  since an unresolvable horizon leaves workstream C with no filing window.
 - Exact-duplicate claims across calls (`dedupe_claims`).
 - Same-turn near-duplicates (`difflib.SequenceMatcher >= 0.88`,
   `dedupe_similar_claims`).
@@ -449,7 +454,9 @@ Both time bounds are now structural rather than model-driven: there is no
 date argument for the LLM to set, so the iter-2 `before_date <= call_date`
 empty-window bug (the agent setting an upper bound at the call date and getting
 0 hits) is gone by construction. `horizon_end=None` (unresolved horizon) means
-no upper bound.
+no upper bound — but as of 2026-05-24 the extractor prunes claims with an
+unresolved horizon (`filter_unresolved_horizon`), so in practice every claim
+reaching the verifier carries a non-null `horizon_end`.
 
 `verifier/tools.py`:
 

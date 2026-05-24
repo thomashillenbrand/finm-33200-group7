@@ -7,9 +7,10 @@ Per the workstream-B design decisions:
   - Schema: lightweight (type + verbatim quote + summary + horizon), two claim
     types -- ``numerical_guidance`` and ``capital_allocation``.
   - Horizons: resolved to absolute dates *and* kept raw.
-  - Scope: numerical guidance must state a specific figure -- a directional-only
-    guidance claim is dropped by ``filter_unquantified_guidance``;
-    ``capital_allocation`` claims are kept regardless.
+  - Scope: numerical guidance must state a specific figure
+    (``filter_unquantified_guidance``); every surviving claim must resolve to a
+    horizon end date or it is pruned as unverifiable
+    (``filter_unresolved_horizon``).
 
 Structured output is enforced with LangChain's ``.with_structured_output()``
 against ``ExtractionResponse`` -- the same pattern the verifier uses.
@@ -97,6 +98,29 @@ def build_extractor(model_name: str | None = None):
     return llm.with_structured_output(ExtractionResponse)
 
 
+def _source_context(call: EarningsCall, component_id: int) -> str:
+    """The source turn plus the turns immediately before and after it.
+
+    Gives workstream C enough surrounding text to understand a sparse quote --
+    notably, for a Q&A answer the preceding turn is the analyst's question.
+    Neighbours are taken from the call's full turn order (analyst and operator
+    turns included). Empty when the quote could not be located to a turn.
+    """
+    if not component_id:
+        return ""
+    turns = call.turns
+    idx = next(
+        (i for i, t in enumerate(turns) if t.component_id == component_id), None
+    )
+    if idx is None:
+        return ""
+    lo, hi = max(0, idx - 1), min(len(turns), idx + 2)
+    return "\n\n".join(
+        f"{t.speaker_name} ({t.component_type}): {t.text}".strip()
+        for t in turns[lo:hi]
+    )
+
+
 def _enrich(
     extracted: ExtractedClaim,
     call: EarningsCall,
@@ -125,6 +149,7 @@ def _enrich(
         verbatim_quote=extracted.verbatim_quote,
         quote_verbatim=match.verbatim,
         summary=extracted.summary,
+        source_context=_source_context(call, component_id),
         horizon_raw=extracted.horizon_raw,
         horizon_period=horizon_period,
         horizon_end_date=horizon_end,
@@ -169,6 +194,19 @@ def filter_unquantified_guidance(claims: list[Claim]) -> list[Claim]:
             continue
         kept.append(claim)
     return kept
+
+
+def filter_unresolved_horizon(claims: list[Claim]) -> list[Claim]:
+    """Drop claims whose horizon could not be resolved to an end date.
+
+    A claim with ``horizon_end_date is None`` cannot be checked against a
+    specific filing period, so it is unverifiable and is pruned here. This
+    applies to *both* claim types: per the workstream-B scope decision an
+    unresolved horizon makes a claim ungradable regardless of type. The raw
+    horizon wording the model gave is kept on the claims that survive, for
+    audit; only the unresolvable ones are dropped.
+    """
+    return [c for c in claims if c.horizon_end_date is not None]
 
 
 def dedupe_claims(claims: list[Claim]) -> list[Claim]:
@@ -236,11 +274,11 @@ def extract_call(
 ) -> list[Claim]:
     """Extract claims from one earnings call.
 
-    Returns ``[]`` if the call has no management turns. Numerical-guidance
-    claims with no stated figure are dropped, then exact-duplicate and
-    same-turn near-duplicate claims are removed. Pass a pre-built ``extractor``
-    (from ``build_extractor``) to avoid re-creating the client when processing
-    many calls.
+    Returns ``[]`` if the call has no management turns. Post-processing, in
+    order: drop numerical-guidance claims with no figure; prune claims whose
+    horizon did not resolve to an end date; remove exact-duplicate and then
+    same-turn near-duplicate claims. Pass a pre-built ``extractor`` (from
+    ``build_extractor``) to avoid re-creating the client across many calls.
     """
     if not call.management_turns():
         return []
@@ -262,6 +300,7 @@ def extract_call(
     extracted_at = datetime.now(timezone.utc)
     claims = [_enrich(ec, call, model_name, extracted_at) for ec in response.claims]
     claims = filter_unquantified_guidance(claims)
+    claims = filter_unresolved_horizon(claims)
     claims = dedupe_claims(claims)
     claims = dedupe_similar_claims(claims)
     return claims
