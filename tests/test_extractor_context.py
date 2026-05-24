@@ -141,3 +141,33 @@ def test_enrich_leaves_source_context_empty_for_an_unlocatable_quote():
     )
     assert claim.component_id == 0
     assert claim.source_context == ""
+
+
+def test_source_context_is_single_line():
+    """The field must contain no newlines so the output CSV opens cleanly in a
+    spreadsheet -- an embedded newline in a quoted cell is valid CSV but is
+    mis-rendered as extra rows by some spreadsheet apps."""
+    context = _source_context(_call(), component_id=30)
+    assert "\n" not in context
+    assert "\r" not in context
+
+
+def test_source_context_joins_turns_with_a_visible_marker():
+    """The three turns are separated by a `` || `` marker, not a newline."""
+    context = _source_context(_call(), component_id=30)
+    assert context.count(" || ") == 2  # three turns -> two separators
+
+
+def test_source_context_collapses_newlines_inside_a_turn():
+    """A turn whose own text spans multiple lines is flattened to one line."""
+    multiline = Turn(
+        component_id=50,
+        component_order=5,
+        component_type="Answer",
+        speaker_name="Jane Doe",
+        speaker_type="Executives",
+        text="First line of the answer.\n\nSecond line.\nThird line.",
+    )
+    context = _source_context(_call([multiline]), component_id=50)
+    assert "\n" not in context
+    assert "First line of the answer. Second line. Third line." in context

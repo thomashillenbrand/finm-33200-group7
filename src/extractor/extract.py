@@ -105,6 +105,13 @@ def _source_context(call: EarningsCall, component_id: int) -> str:
     notably, for a Q&A answer the preceding turn is the analyst's question.
     Neighbours are taken from the call's full turn order (analyst and operator
     turns included). Empty when the quote could not be located to a turn.
+
+    The result is single-line: each turn's text has its internal whitespace
+    (newlines included) collapsed to single spaces, and the turns are joined
+    with a `` || `` marker. Transcript turns are themselves multi-line, so
+    keeping this field newline-free is what lets the output CSV open correctly
+    in a spreadsheet -- an embedded newline in a quoted cell is valid CSV but
+    is mis-rendered as extra rows by some spreadsheet apps.
     """
     if not component_id:
         return ""
@@ -115,8 +122,8 @@ def _source_context(call: EarningsCall, component_id: int) -> str:
     if idx is None:
         return ""
     lo, hi = max(0, idx - 1), min(len(turns), idx + 2)
-    return "\n\n".join(
-        f"{t.speaker_name} ({t.component_type}): {t.text}".strip()
+    return " || ".join(
+        " ".join(f"{t.speaker_name} ({t.component_type}): {t.text}".split())
         for t in turns[lo:hi]
     )
 
