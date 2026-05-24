@@ -262,9 +262,9 @@ flowchart TD
     cli["python -m extractor.run<br/>--input … --output …"]
     cli --> reader["reader.load_calls()<br/>collapses Capital IQ versions<br/>→ list[EarningsCall]"]
     reader --> percall{per call}
-    percall --> build_input["reader.build_call_input(call)<br/>turn-numbered transcript text"]
+    percall --> build_input["reader.build_call_input(call)<br/>speaker-labelled transcript text"]
     percall --> prompt["prompt.build_user_prompt(...)"]
-    build_input --> llm[("openai:gpt-4o-mini<br/>.with_structured_output(ExtractionResponse)")]
+    build_input --> llm[("$EXTRACTOR_MODEL<br/>.with_structured_output(ExtractionResponse)")]
     prompt --> llm
     llm --> raw["ExtractionResponse<br/>list[ExtractedClaim]"]
     raw --> enrich["extract._enrich()<br/>+ provenance.locate_quote()<br/>+ horizon.resolve_horizon()"]
