@@ -180,9 +180,12 @@ def test_build_index_writes_chunks_parquet_and_faiss(ticker_root, mock_embedding
     # Every fixture filing contributes ≥1 chunk; expect ≥3 rows total.
     assert len(df) >= 3
     # Required columns:
-    for col in ("chunk_id", "accession_no", "form", "filing_date",
+    for col in ("chunk_id", "accession_no", "form", "filing_date", "report_date",
                 "local_path", "char_start", "char_end", "text"):
         assert col in df.columns
+    # report_date is populated from the SEC index's reportDate for every chunk
+    # (the 10-K reports 2023-12-31, the 10-Q 2024-03-31, the 8-K 2024-06-14).
+    assert df["report_date"].notna().all()
 
 
 def test_build_index_is_idempotent(ticker_root, mock_embeddings):

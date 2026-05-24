@@ -51,13 +51,18 @@ def test_search_index_query_respects_after_date(built_index):
     assert any(item.form == "8-K" for item in items)
 
 
-def test_search_index_query_respects_before_date(built_index):
+def test_search_index_query_respects_horizon_end(built_index):
+    """horizon_end ceilings by the period a filing covers (reportDate), not by
+    filing date. The fixture 10-K is filed 2024-02-20 but reports 2023-12-31;
+    the 10-Q reports 2024-03-31 and the 8-K 2024-06-14. A horizon ending
+    2024-01-31 keeps only the 10-K."""
     idx = SearchIndex.load("MINI")
     items = idx.query("share repurchase",
                       after_date=date(2020, 1, 1),
-                      before_date=date(2024, 3, 1))
+                      horizon_end=date(2024, 1, 31))
+    assert items, "the 10-K (reports 2023-12-31) should survive the horizon"
     for item in items:
-        assert item.filing_date <= date(2024, 3, 1)
+        assert item.form == "10-K"
 
 
 def test_search_index_query_respects_forms_filter(built_index):

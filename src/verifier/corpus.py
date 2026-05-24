@@ -46,6 +46,20 @@ class SearchIndex:
         # store this as `date`, `Timestamp`, or `object`; normalize to datetime64.
         if not pd.api.types.is_datetime64_any_dtype(self._chunks["filing_date"]):
             self._chunks["filing_date"] = pd.to_datetime(self._chunks["filing_date"])
+        # report_date bounds the claim horizon (the fiscal period a filing
+        # covers). Required since the horizon-aware indexer; a pre-report_date
+        # parquet is stale and must be rebuilt rather than silently mis-bounded.
+        if "report_date" not in self._chunks.columns:
+            raise IndexCorruptError(
+                f"chunks.parquet for {ticker} has no report_date column. "
+                f"Rebuild with `python -m verifier.index {ticker}`."
+            )
+        # NaT-safe: filings with no reportDate parse to NaT; query() falls back
+        # to filing_date for those rows.
+        if not pd.api.types.is_datetime64_any_dtype(self._chunks["report_date"]):
+            self._chunks["report_date"] = pd.to_datetime(
+                self._chunks["report_date"], errors="coerce"
+            )
 
     @classmethod
     def load(cls, ticker: str) -> "SearchIndex":
@@ -91,7 +105,7 @@ class SearchIndex:
         text: str,
         *,
         after_date: date,
-        before_date: date | None = None,
+        horizon_end: date | None = None,
         forms: list[str] | None = None,
         k: int = 8,
     ) -> list[EvidenceItem]:
@@ -100,11 +114,20 @@ class SearchIndex:
         Filters are applied as a whitelist over chunks.parquet; FAISS is
         searched with `k * 5` over-fetch so that post-filter has enough hits
         in the whitelist to reach `k`.
+
+        `after_date` floors by filing date (no-time-leak: never a filing that
+        predates the claim). `horizon_end` ceilings by the period a filing
+        covers (reportDate, falling back to filing date when absent), so a
+        claim is graded only against filings whose fiscal period is within its
+        horizon. Both bounds are caller-supplied, never LLM-supplied.
         """
         # 1. Build the whitelist of row indices that pass the metadata filters.
         mask = self._chunks["filing_date"].dt.date >= after_date
-        if before_date is not None:
-            mask &= self._chunks["filing_date"].dt.date <= before_date
+        if horizon_end is not None:
+            period = self._chunks["report_date"].where(
+                self._chunks["report_date"].notna(), self._chunks["filing_date"]
+            )
+            mask &= period.dt.date <= horizon_end
         if forms:
             mask &= self._chunks["form"].isin(forms)
         whitelist = np.flatnonzero(mask.to_numpy())
