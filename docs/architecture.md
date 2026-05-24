@@ -379,7 +379,7 @@ sequenceDiagram
     participant P as _extract_structured (parser LLM)
 
     CLI->>V: Claim
-    V->>V: _format_claim_for_agent(claim) [ticker hidden; raises on numerical_guidance]
+    V->>V: _format_claim_for_agent(claim) — ticker hidden, raises on numerical_guidance
     V->>V: _configure_cache(enabled)
     V->>T: bind_search_filings(claim.ticker, claim.call_date)
     V->>A: build_agent(mode, tools=[T])
