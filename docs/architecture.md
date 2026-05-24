@@ -128,6 +128,7 @@ classDiagram
       +str verbatim_quote
       +bool quote_verbatim
       +str summary
+      +str source_context
       +str horizon_raw
       +str horizon_period
       +date? horizon_end_date
@@ -270,7 +271,8 @@ flowchart TD
     raw --> enrich["extract._enrich()<br/>+ provenance.locate_quote()<br/>+ horizon.resolve_horizon()"]
     enrich --> claims["list[Claim]"]
     claims --> f1["filter_unquantified_guidance"]
-    f1 --> f2["dedupe_claims"]
+    f1 --> fh["filter_unresolved_horizon"]
+    fh --> f2["dedupe_claims"]
     f2 --> f3["dedupe_similar_claims"]
     f3 --> writer["output.write_claims_csv()"]
     writer --> out["data/claims/<name>.csv"]
@@ -280,11 +282,11 @@ flowchart TD
 
 | File | Role | Key entry points |
 |---|---|---|
-| `extract.py` | The end-to-end driver per call/transcript. `build_extractor`, `extract_call`, `extract_transcript`, `filter_unquantified_guidance`, `dedupe_*`. Model from `_resolve_extractor_model(explicit)`: a `--model` arg wins, else the `EXTRACTOR_MODEL` env var; no hardcoded fallback (raises if neither is set). |
+| `extract.py` | The end-to-end driver per call/transcript. `build_extractor`, `extract_call`, `extract_transcript`, `filter_unquantified_guidance`, `filter_unresolved_horizon`, `dedupe_*`; `_source_context` builds the `source_context` field. Model from `_resolve_extractor_model(explicit)`: a `--model` arg wins, else the `EXTRACTOR_MODEL` env var; no hardcoded fallback (raises if neither is set). |
 | `reader.py` | Reads the WRDS transcript parquet, collapses Capital IQ's multiple proofed versions to the final per-call copy, exposes `EarningsCall` + `Turn` dataclasses. `load_calls`, `build_call_input`. |
 | `prompt.py` | System + user prompt templates and the `PROMPT_VERSION` string that gets stamped on every `Claim`. `build_user_prompt`. |
 | `provenance.py` | `locate_quote(turns, quote)` — back-matches the model's `verbatim_quote` to a source turn so we know who said it (model-reported ids were unreliable in the pilot, so we recover them ourselves). |
-| `horizon.py` | `resolve_horizon(raw, call_date)` — turn "FY2024", "next quarter", "by end of 2025", etc. into `(period_label, end_date)`. |
+| `horizon.py` | `resolve_horizon(raw, call_date)` — turn "FY2024", "next quarter", "by end of 2025", bare quarters ("Q2", resolved to the next valid Q2 vs. the call date), bare months ("by the end of March"), etc. into `(period_label, end_date)`. Returns `("", None)` when nothing resolves. |
 | `output.py` | `write_claims_csv(claims, path)` — single source of truth for column order (uses `schemas.CSV_FIELDS`). |
 | `run.py` | argparse CLI. Supports `--input` as a single parquet *or* a directory (recursive `*_transcripts.parquet`), `--limit` for the day-4 pilot, `--model` override. |
 
@@ -292,9 +294,13 @@ flowchart TD
 
 - Numerical-guidance claims with no stated figure
   (`filter_unquantified_guidance`).
+- Claims with no usable forward horizon (`filter_unresolved_horizon`) — a
+  blanket prune across **both** claim types covering both an unresolved horizon
+  and one that resolves to a date on or before the call date (a mis-extracted
+  past-result statement); either leaves workstream C with no filing window.
 - Exact-duplicate claims across calls (`dedupe_claims`).
-- Same-turn near-duplicates (`difflib.SequenceMatcher >= 0.88`,
-  `dedupe_similar_claims`).
+- Same-turn near-duplicates (`difflib.SequenceMatcher >= 0.88` **or** one quote
+  being a substring of the other, `dedupe_similar_claims`).
 - Capital-allocation claims without a stated figure are **kept**: a buyback
   announcement with no dollar amount is still a claim.
 
@@ -337,8 +343,8 @@ flowchart TD
 | `chunk_text(text, window_tokens, overlap_tokens)` | Fixed-token chunker. Uses tiktoken `cl100k_base`. Builds char offsets in O(n) via `decode_single_token_bytes` + parallel UTF-8 walk (the original O(n²) version made a TSLA 10-K hang for 14+ min — see `test_chunker_is_subquadratic_on_realistic_filing_size`). |
 | `extract_text_from_html(html_bytes)` | BeautifulSoup → flat text with paragraph breaks preserved. |
 | `chunk_id(accession, char_start, char_end)` | Stable sha1 chunk id. |
-| `_chunk_filing(row, sec_root)` | Read one filing, return list of chunk dicts. Skips non-HTML primary docs. |
-| `build_index(ticker, refresh=False)` | The driver. Incremental by default — re-embeds only new accessions; `refresh=True` wipes `index/` first. Detects FAISS↔parquet length mismatch as `IndexCorruptError`. |
+| `_chunk_filing(row, sec_root)` | Read one filing, return list of chunk dicts (carries `filing_date` **and `report_date`** from the SEC index's `reportDate`). Skips non-HTML primary docs. |
+| `build_index(ticker, refresh=False)` | The driver. Incremental by default — re-embeds only new accessions; `refresh=True` wipes `index/` first. Detects FAISS↔parquet length mismatch as `IndexCorruptError`. Backfills `report_date` onto every surviving chunk from the current SEC index, so a pre-horizon index gains the column with **no re-embedding** (`chunk_id` is date-independent). |
 | `_cli_main` | `python -m verifier.index` argparse entry. |
 | `_resolve_embedding_model()` | OpenAI embedding model from the `EMBEDDING_MODEL` env var; no hardcoded fallback (raises if unset). |
 
@@ -351,17 +357,25 @@ mapped once per ticker per process.
 ```python
 items = SearchIndex.load("TSLA").query(
     text="share repurchase Q1 2024",
-    after_date=claim.call_date,       # closed over in the tool, see below
-    before_date=optional_upper_bound,
+    after_date=claim.call_date,         # closed over in the tool, see below
+    horizon_end=claim.horizon_end_date, # closed over too; None = open-ended
     forms=["10-Q", "8-K"],
     k=8,
 )  # → list[EvidenceItem]
 ```
 
 Implementation details that matter:
-- `after_date` / `before_date` / `forms` are applied as a **whitelist mask
+- `after_date` / `horizon_end` / `forms` are applied as a **whitelist mask
   over chunks.parquet first**; FAISS is then searched with `k * 5`
   oversampling and post-filtered against that whitelist to keep `k` hits.
+- `after_date` floors by **filing date** (no-time-leak: never a filing that
+  predates the claim). `horizon_end` ceilings by the **period the filing
+  covers** — `report_date` (the SEC `reportDate`), falling back to filing date
+  when absent — so a late-filed annual 10-K (filed in Feb but reporting the
+  prior Dec 31) is still graded against an annual claim, while a filing whose
+  fiscal period is past the horizon is dropped. `chunks.parquet` carries a
+  `report_date` column; `SearchIndex.load` raises `IndexCorruptError` if it's
+  missing (a pre-horizon index must be rebuilt).
 - Query embedding has a per-instance `lru_cache(maxsize=512)`, so an identical
   follow-up query in the same process is free.
 - Empty-whitelist short-circuits before embedding (saves a call when the
@@ -381,10 +395,10 @@ sequenceDiagram
     CLI->>V: Claim
     V->>V: _format_claim_for_agent(claim) — ticker hidden, raises on numerical_guidance
     V->>V: _configure_cache(enabled)
-    V->>T: bind_search_filings(claim.ticker, claim.call_date)
+    V->>T: bind_search_filings(claim.ticker, claim.call_date, claim.horizon_end_date)
     V->>A: build_agent(mode, tools=[T])
     loop until agent stops calling tools
-        A->>T: search_filings(query, before_date?, forms?)
+        A->>T: search_filings(query, forms?)
         T->>I: index.query(...)
         I-->>T: list[EvidenceItem]
         T-->>A: _stringify_evidence(items)
@@ -421,33 +435,35 @@ fallback.
 
 ```mermaid
 flowchart LR
-    claim["Claim<br/>ticker=TSLA<br/>call_date=2020-01-29"]
-    bind["bind_search_filings(<br/>ticker='TSLA',<br/>after_date=2020-01-29)"]
-    closure["@tool search_filings(<br/>query,<br/>before_date?, forms?)"]
-    visible["LLM-visible signature<br/>only: (query, before_date?, forms?)"]
+    claim["Claim<br/>ticker=TSLA<br/>call_date=2020-01-29<br/>horizon_end=2020-12-31"]
+    bind["bind_search_filings(<br/>ticker='TSLA',<br/>after_date=2020-01-29,<br/>horizon_end=2020-12-31)"]
+    closure["@tool search_filings(<br/>query, forms?)"]
+    visible["LLM-visible signature<br/>only: (query, forms?)"]
 
     claim --> bind --> closure
     closure --> visible
 ```
 
-The closure captures `ticker` and `after_date`. Those variables are **never in
-the tool's visible signature**, so the LLM cannot widen the corpus to another
-firm or look at filings from before the call date. This is the load-bearing
-no-time-leakage guarantee, verified empirically by `tests/test_verify_live.py`
-and by the 5-claim smoke run on 2026-05-23 (0 time-leaks across 61 retrieved
-chunks).
+The closure captures `ticker`, `after_date`, **and `horizon_end`**. None of
+them are in the tool's visible signature, so the LLM cannot widen the corpus to
+another firm, look at filings from before the call date, or reach past the
+claim's horizon. This is the load-bearing no-time-leakage guarantee, verified
+empirically by `tests/test_verify_live.py` and by the 5-claim smoke run on
+2026-05-23 (0 time-leaks across 61 retrieved chunks).
 
-The LLM-visible `before_date` is floored at the tool layer: if the model passes
-`before_date <= after_date` (an empty window — a bug seen in the smoke run where
-the agent set `before_date` to the call date and got 0 hits), the tool silently
-widens it to open-ended (`None`) and the docstring warns against it. So a
-mistaken upper bound degrades to "no upper bound" rather than to zero evidence.
+Both time bounds are now structural rather than model-driven: there is no
+date argument for the LLM to set, so the iter-2 `before_date <= call_date`
+empty-window bug (the agent setting an upper bound at the call date and getting
+0 hits) is gone by construction. `horizon_end=None` (unresolved horizon) means
+no upper bound — but as of 2026-05-24 the extractor prunes claims with an
+unresolved horizon (`filter_unresolved_horizon`), so in practice every claim
+reaching the verifier carries a non-null `horizon_end`.
 
 `verifier/tools.py`:
 
 | Symbol | Role |
 |---|---|
-| `bind_search_filings(ticker, after_date)` | Factory that returns the per-claim closure (a LangChain `@tool`). |
+| `bind_search_filings(ticker, after_date, horizon_end=None)` | Factory that returns the per-claim closure (a LangChain `@tool`). Both time bounds are closed over, not LLM-visible. |
 | `_stringify_evidence(items)` | Render `list[EvidenceItem]` into the bracketed `[form filed YYYY-MM-DD, accession …]` text the LLM sees. Returns `"[no matching filings]"` on empty. |
 
 ### 6e. Tracing
@@ -585,8 +601,10 @@ backlog in `docs/future_optimizations.md`.
 
 Resolved robustness items: `verify()` retries per-claim on
 `openai.RateLimitError` (tenacity, on top of the SDK's `max_retries=3`); the
-`before_date <= call_date` window bug is floored at the tool layer (§6d); the
-`datetime.utcnow()` deprecation is fixed. The SQLite chat-cache schema-drift
+`before_date <= call_date` window bug is gone by construction — the search
+window is now fully closed over (`after_date` floor + `horizon_end` ceiling),
+with no LLM-visible date argument (§6b, §6d); the `datetime.utcnow()`
+deprecation is fixed. The SQLite chat-cache schema-drift
 crash is an accepted limitation — the workaround (`--no-cache` or delete
 `pulled_data/.cache/llm_cache.sqlite`) is documented in the README.
 

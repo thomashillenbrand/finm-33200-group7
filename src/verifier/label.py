@@ -53,12 +53,23 @@ _CONFIDENCE = {"h": "high", "m": "medium", "l": "low"}
 
 # Deterministic per-claim-type sweep terms -- the keyword loop a labeler would
 # otherwise run by hand. No LLM, no embeddings: this stays an independent,
-# transparent search.
+# transparent search. Specific financial-statement line items lead each group;
+# the bare keywords stay as recall fallback but rank below the phrases (see
+# `_relevance`).
 _SWEEP_TERMS: dict[str, list[str]] = {
     "capital_allocation": [
-        "repurchase", "buyback", "treasury stock",
+        # share repurchases -- cash-flow / equity line items first
+        "repurchases of common stock", "repurchase of common stock",
+        "purchases of treasury stock", "treasury stock",
+        "repurchase", "buyback",
+        # dividends
+        "dividends paid", "dividends declared", "cash dividends",
         "dividend", "distribution",
-        "capital expenditures", "property and equipment",
+        # capital expenditures
+        "purchases of property and equipment", "capital expenditures",
+        "additions to property", "property and equipment",
+        # debt
+        "proceeds from issuance of debt", "repayments of long-term debt",
         "senior notes", "credit facility", "borrowings", "repaid", "redeemed",
     ],
 }
@@ -83,6 +94,7 @@ class Candidate:
     local_path: str
     term: str
     snippet: str
+    report_date: date | None = None
 
     def to_evidence(self) -> GoldEvidence:
         return GoldEvidence(
@@ -140,6 +152,8 @@ def _load_filing_index(ticker: str) -> pd.DataFrame:
         raise SystemExit(f"SEC filing index not found: {path}")
     df = pd.read_parquet(path)
     df["filingDate"] = pd.to_datetime(df["filingDate"]).dt.date
+    if "reportDate" in df.columns:
+        df["reportDate"] = pd.to_datetime(df["reportDate"], errors="coerce").dt.date
     return df
 
 
@@ -164,11 +178,24 @@ def candidate_filings(
     forms: tuple[str, ...] = _FORMS,
     from_date: date | None = None,
     until_date: date | None = None,
+    horizon_end: date | None = None,
 ) -> pd.DataFrame:
     """Filings that could hold evidence: filed strictly after the call,
-    restricted to ``forms``, optionally bounded, sorted by date."""
+    restricted to ``forms``, optionally bounded, sorted by date.
+
+    The no-time-leak guard (`filingDate > call_date`) is always applied. When
+    ``horizon_end`` is given, filings are additionally bounded by the period
+    they *report* (`reportDate <= horizon_end`), not by when they were filed --
+    so a late-filed annual 10-K that reports the horizon year is kept, while a
+    next-year quarterly filed inside the old reporting-lag tail is dropped.
+    ``until_date`` still bounds by filing date for manual overrides / the
+    unresolved-horizon fallback.
+    """
     df = index_df[index_df["form"].isin(forms)].copy()
-    df = df[df["filingDate"] > claim.call_date]
+    df = df[df["filingDate"] > claim.call_date]      # no-time-leak guard
+    if horizon_end is not None and "reportDate" in df.columns:
+        period = df["reportDate"].where(df["reportDate"].notna(), df["filingDate"])
+        df = df[period <= horizon_end]               # don't report beyond the horizon
     if from_date is not None:
         df = df[df["filingDate"] >= from_date]
     if until_date is not None:
@@ -196,19 +223,100 @@ def search_filing(
     return matches
 
 
+# Inline-XBRL / taxonomy fragments sometimes survive HTML->text flattening
+# (e.g. "0000059478 us-gaap:RestrictedStockUnitsRSUMember 2019-12-31"). They
+# carry no human-readable evidence, so a hit whose context is XBRL is dropped
+# rather than shown to the labeler.
+_NOISE_MARKERS = ("us-gaap:", "xbrli", "iso4217:", "dei:", "srt:", "xmlns")
+
+
+def _is_noise(snippet: str) -> bool:
+    low = snippet.lower()
+    return any(marker in low for marker in _NOISE_MARKERS)
+
+
+# Which sweep terms belong to each capital-allocation subcategory, and the cues
+# in a claim's own text that say which subcategory it is about. Used to focus
+# the ranking on the claim's topic (a dividend claim should surface the dividend
+# line, not the longer capex phrase). Pure keyword matching on the claim text --
+# this is the missing `subcategory` field, inferred deterministically for the
+# duration of one labeling session; it never reads the agent or an embedding.
+_SUBCATEGORY_TERMS: dict[str, set[str]] = {
+    "buyback": {"repurchases of common stock", "repurchase of common stock",
+                "purchases of treasury stock", "treasury stock",
+                "repurchase", "buyback"},
+    "dividend": {"dividends paid", "dividends declared", "cash dividends",
+                 "dividend", "distribution"},
+    "capex": {"purchases of property and equipment", "capital expenditures",
+              "additions to property", "property and equipment"},
+    "debt": {"proceeds from issuance of debt", "repayments of long-term debt",
+             "senior notes", "credit facility", "borrowings", "repaid", "redeemed"},
+}
+_CLAIM_FOCUS_CUES: dict[str, tuple[str, ...]] = {
+    "buyback": ("repurchas", "buyback", "buy back", "treasury", "share repurchase"),
+    "dividend": ("dividend", "distribution", "return cash", "return capital", "payout"),
+    "capex": ("capital expenditure", "capex", "capital invest", "capital spending",
+              "factory", "facility", "plant", "construct", "fulfillment",
+              "capacity", "property and equipment", "build"),
+    "debt": ("debt", "notes", "borrow", "credit facility", "leverage",
+             "refinanc", "repay", "redeem", "issuance"),
+}
+
+
+def _claim_focus(claim: Claim) -> set[str]:
+    """Terms to prioritize, inferred from the claim's own quote + summary.
+
+    Empty when no cue matches -- ranking then falls back to pure specificity.
+    """
+    text = f"{claim.verbatim_quote} {claim.summary}".lower()
+    focus: set[str] = set()
+    for subcat, cues in _CLAIM_FOCUS_CUES.items():
+        if any(cue in text for cue in cues):
+            focus |= _SUBCATEGORY_TERMS[subcat]
+    return focus
+
+
+# Bigger than any specificity+dollar score below, so a term matching the claim's
+# own subcategory always outranks an off-topic hit regardless of phrase length.
+_FOCUS_BONUS = 10
+
+
+def _relevance(term: str, snippet: str, focus: set[str] | tuple = ()) -> int:
+    """Deterministic, transparent relevance score for ranking sweep hits.
+
+    Not semantic and not learned -- it just encodes what a human skims for: a
+    term matching the claim's own subcategory (`focus`) wins outright, then a
+    multi-word line item ("repurchases of common stock") beats a bare keyword,
+    and a hit sitting next to a dollar figure beats the same term in prose. No
+    embeddings, no LLM -- the independence guarantee is untouched.
+    """
+    score = len(term.split())
+    low = snippet.lower()
+    if "$" in snippet or "million" in low or "billion" in low:
+        score += 2
+    if term in focus:
+        score += _FOCUS_BONUS
+    return score
+
+
 def sweep(
     filings_df: pd.DataFrame,
     sec_dir: Path,
     *,
     terms: list[str],
     context: int = 240,
+    focus: set[str] | tuple = (),
 ) -> list[Candidate]:
-    """Deterministic keyword sweep: per filing, the first hit of each term.
+    """Deterministic keyword sweep over the candidate filings.
 
-    Returns candidates in filing-date then term order -- a fixed, transparent
-    ordering, not a relevance ranking.
+    Per filing, takes the first hit of each term, drops inline-XBRL noise, then
+    ranks all hits by a transparent score (`_relevance`): terms matching the
+    claim's subcategory (`focus`) first, then specific line-item phrases and
+    dollar-adjacent hits, ties broken by filing date then term. Still pure
+    keyword search -- no embeddings, no LLM ranker -- so the labeler sees the
+    most plausible evidence first without the tool ever deciding what counts.
     """
-    candidates: list[Candidate] = []
+    scored: list[tuple[int, date, str, Candidate]] = []
     for row in filings_df.itertuples(index=False):
         fpath = _resolve_filing_path(sec_dir, row.localPath)
         if not fpath.exists():
@@ -216,16 +324,23 @@ def sweep(
         text = _html_to_text(fpath.read_bytes())
         for term in terms:
             hits = search_filing(text, term, context=context)
-            if hits:
-                candidates.append(Candidate(
-                    accession_no=str(row.accessionNumber),
-                    form=str(row.form),
-                    filing_date=row.filingDate,
-                    local_path=str(row.localPath),
-                    term=term,
-                    snippet=hits[0].snippet,
-                ))
-    return candidates
+            if not hits:
+                continue
+            snippet = hits[0].snippet
+            if _is_noise(snippet):
+                continue
+            cand = Candidate(
+                accession_no=str(row.accessionNumber),
+                form=str(row.form),
+                filing_date=row.filingDate,
+                local_path=str(row.localPath),
+                term=term,
+                snippet=snippet,
+                report_date=getattr(row, "reportDate", None),
+            )
+            scored.append((_relevance(term, snippet, focus), row.filingDate, term, cand))
+    scored.sort(key=lambda t: (-t[0], t[1], t[2]))
+    return [cand for _, _, _, cand in scored]
 
 
 # ── Gold-file I/O ──────────────────────────────────────────────────────────
@@ -255,7 +370,13 @@ def append_gold_label(gold_path: Path, label: GoldLabel) -> None:
 
 # ── Rendering ──────────────────────────────────────────────────────────────
 
-def _render_claim(claim: Claim, until_date: date) -> str:
+def _render_claim(claim: Claim, until_date: date | None) -> str:
+    if claim.horizon_end_date is not None:
+        window = f"reporting periods through {claim.horizon_end_date} (the claim horizon)"
+    elif until_date is not None:
+        window = f"filed on/before {until_date}"
+    else:
+        window = "all subsequent filings"
     return (
         f"=== CLAIM {claim.claim_id} ===\n"
         f"  {claim.ticker} ({claim.company}) -- call {claim.call_date}\n"
@@ -263,13 +384,14 @@ def _render_claim(claim: Claim, until_date: date) -> str:
         f"  quote:   {claim.verbatim_quote}\n"
         f"  summary: {claim.summary}\n"
         f"  horizon: {claim.horizon_raw or '(none stated)'}  ->  "
-        f"{claim.horizon_period or '(unresolved)'}\n"
-        f"  Grading filings filed {claim.call_date} .. {until_date}."
+        f"{claim.horizon_period or '(unresolved)'} (ends {claim.horizon_end_date or 'open'})\n"
+        f"  Grading filings filed after {claim.call_date}, {window}."
     )
 
 
 def _render_candidate(index: int, c: Candidate) -> str:
-    return (f"  [{index}] {c.form} filed {c.filing_date}  acc {c.accession_no}"
+    reports = f", reports {c.report_date}" if c.report_date else ""
+    return (f"  [{index}] {c.form} filed {c.filing_date}{reports}  acc {c.accession_no}"
             f"  (matched: {c.term})\n      ...{c.snippet}...")
 
 
@@ -310,7 +432,7 @@ def run_session(
     sec_dir: Path,
     gold_path: Path,
     labeler: str,
-    until_date: date,
+    until_date: date | None,
     *,
     context: int = 240,
     limit: int = _DISPLAY_LIMIT,
@@ -322,9 +444,11 @@ def run_session(
     """
     say(_render_claim(claim, until_date))
 
+    focus = _claim_focus(claim)
     candidates = sweep(
         filings_df, sec_dir,
         terms=list(_SWEEP_TERMS.get(claim.claim_type, [])), context=context,
+        focus=focus,
     )
     shown = 0
 
@@ -361,7 +485,7 @@ def run_session(
                 say("  (usage: more <keyword>)")
                 continue
             existing = {(c.accession_no, c.snippet) for c in candidates}
-            found = sweep(filings_df, sec_dir, terms=[term], context=context)
+            found = sweep(filings_df, sec_dir, terms=[term], context=context, focus=focus)
             added = [c for c in found if (c.accession_no, c.snippet) not in existing]
             candidates.extend(added)
             say(f"  +{len(added)} new hit(s) for {term!r}.")
@@ -455,12 +579,17 @@ def main(argv: list[str] | None = None) -> int:
     forms = (tuple(f.strip() for f in args.forms.split(",")) if args.forms
              else _FORMS)
     from_date = date.fromisoformat(args.from_date) if args.from_date else None
-    until_date = (date.fromisoformat(args.until_date) if args.until_date
-                  else grading_window(claim))
+    if args.until_date:
+        until_date = date.fromisoformat(args.until_date)      # explicit override (filing date)
+    elif claim.horizon_end_date is None:
+        until_date = grading_window(claim)                    # unresolved horizon: filing-date fallback
+    else:
+        until_date = None                                     # resolved: reportDate bound does the work
 
     index_df = _load_filing_index(claim.ticker)
     filings = candidate_filings(
-        claim, index_df, forms=forms, from_date=from_date, until_date=until_date
+        claim, index_df, forms=forms, from_date=from_date, until_date=until_date,
+        horizon_end=claim.horizon_end_date,
     )
     if filings.empty:
         print("No candidate filings in the grading window. "

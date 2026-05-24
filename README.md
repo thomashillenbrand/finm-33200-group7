@@ -28,17 +28,18 @@ finm-33200-group7/
 │   │   ├── horizon.py         # resolves claim time horizons to absolute dates
 │   │   ├── prompt.py          # extraction system prompt + few-shot examples
 │   │   ├── provenance.py      # matches an extracted quote back to its source turn
-│   │   ├── extract.py         # build_extractor, extract_call, filter_unquantified_guidance, dedupe_claims
+│   │   ├── extract.py         # build_extractor, extract_call, filter_unquantified_guidance, filter_unresolved_horizon, dedupe_claims
 │   │   ├── output.py          # writes the claims CSV
 │   │   └── run.py             # CLI: python -m extractor.run --input ... --output ...
-│   ├── verifier/              # workstream C — verification agent (iteration 1: stubbed tools)
-│   │   ├── __init__.py        # re-exports the public API
-│   │   ├── schema.py          # Pydantic models: Claim, EvidenceItem, EvidenceBundle, Verdict
-│   │   ├── corpus.py          # iteration-1 stub: loads canned excerpts from data/stub/
-│   │   ├── tools.py           # search_filings tool (stubbed; real EDGAR in iteration 2)
-│   │   ├── trace.py           # JSON+Markdown trace writer (adapted from agentic-rag-edgar-demo)
-│   │   ├── agent.py           # build_agent, verify, verify_from_dict
-│   │   └── run.py             # CLI: python -m verifier.run --claim ... --mode {evidence,verdict}
+│   ├── verifier/              # workstream C — verification agent (real EDGAR retrieval + FAISS)
+│   |   ├── __init__.py        # re-exports the public API
+│   |   ├── schema.py          # Pydantic models: Claim, EvidenceItem, EvidenceBundle, Verdict
+│   |   ├── index.py           # offline indexer: chunk + embed SEC HTML → chunks.parquet (+ report_date) + faiss.index
+│   |   ├── corpus.py          # SearchIndex: FAISS query, call-date floor + reportDate horizon ceiling
+│   |   ├── tools.py           # per-claim search_filings tool (ticker/after_date/horizon_end closed over)
+│   |   ├── trace.py           # JSON+Markdown trace writer (adapted from agentic-rag-edgar-demo)
+│   |   ├── agent.py           # build_agent, verify, verify_from_dict
+│   |   └── run.py             # CLI: python -m verifier.run --claim ... --mode {evidence,verdict}
 │   └── autochecker/           # workstream C iter-3 — Compustat-backed numerical grader
 │       ├── __init__.py        # package docstring
 │       ├── schema.py          # Pydantic: ScreenResult, EvidenceResult, VerdictResult, AutocheckRecord
@@ -49,7 +50,7 @@ finm-33200-group7/
 │       ├── verify.py          # stage 2: verification, citation scrubbing
 │       └── run.py             # CLI: python -m autochecker.run --claims ... --mode {evidence,verdict}
 ├── tests/
-│   ├── test_extractor_*.py    # extractor tests: schema, reader, horizon, provenance, filter, dedupe, output, smoke
+│   ├── test_extractor_*.py    # extractor tests: schema, reader, horizon, provenance, filter, dedupe, context, output, smoke
 │   ├── test_schema.py         # verifier Pydantic schema tests
 │   ├── test_corpus.py         # verifier stub corpus loader test
 │   ├── test_tools.py          # verifier search_filings stub test
@@ -162,16 +163,20 @@ workstreams C and D to consume. Capital IQ stores each call as several
 transcript versions, so the reader first keeps only the final, proofed copy of
 each call. For every earnings call it then makes one OpenAI structured-output
 request, recovers each claim's source turn by matching the quote back to the
-transcript, resolves claim time horizons to absolute dates, drops
-numerical-guidance claims that state no specific figure, and removes
-exact-duplicate claims.
+transcript, resolves claim time horizons to absolute dates (absolute and
+relative phrasings, plus bare quarters like `Q2` and bare months like `by the
+end of March`), drops numerical-guidance claims that state no specific figure,
+prunes any claim whose horizon could not be resolved to an end date, and
+removes exact-duplicate claims.
 
 Every claim is classified as either `numerical_guidance` (graded against
 Compustat) or `capital_allocation` (share buybacks, dividends, capex, and debt
 actions — graded against SEC filings), and carries its verbatim quote, a
-paraphrase, provenance (source turn + speaker), and a resolved horizon. By
-design the schema holds no verdict or outcome field: the extractor surfaces
-claims, the verifier surfaces evidence, and human labelers assign verdicts.
+paraphrase, provenance (source turn + speaker), a resolved horizon, and a
+`source_context` field (the source turn plus the turn immediately before it,
+so a sparse quote can be read in context). By design the schema
+holds no verdict or outcome field: the extractor surfaces claims, the verifier
+surfaces evidence, and human labelers assign verdicts.
 
 Run it with the CLI:
 
@@ -199,6 +204,19 @@ firms' actual SEC filings via a local FAISS index, with the load-bearing
 labeling guarantee preserved: in `--mode evidence` the agent returns cited
 excerpts without proposing a verdict.
 
+> **iter-3 update (2026-05-24) — claim-horizon time window.** The agent's
+> filing search is now bounded at *both* ends, enforced at the tool layer (the
+> LLM has no date argument to set): floored at the call date (never a filing
+> from before the claim) and ceilinged at the claim's resolved horizon. The
+> ceiling is keyed on each filing's **reporting period** (`reportDate`), not its
+> filing date — so a late-filed annual 10-K (filed in February but covering the
+> prior Dec 31) is still graded against an annual claim. This replaces the old
+> LLM-visible `before_date` argument and adds a `report_date` column to
+> `chunks.parquet`; **indexes built before this change must be rebuilt** (see
+> below). A claim with no resolved horizon (`horizon_end_date` null) would have
+> no ceiling — but as of 2026-05-24 the extractor prunes such claims upstream
+> (`filter_unresolved_horizon`), so the verifier no longer receives one.
+
 ### Prerequisites
 
 Pull SEC filings + Compustat for the four firms (one-time, ~10–30 min total):
@@ -223,6 +241,13 @@ mamba run -n truth python -m verifier.index TSLA --refresh # full rebuild
 Output: `pulled_data/<TICKER>/index/chunks.parquet` and `faiss.index`.
 Idempotent — re-running on an unchanged corpus is a no-op (only new accession
 numbers get re-embedded).
+
+`chunks.parquet` carries a `report_date` column (the filing's reporting period,
+used for the horizon ceiling). Re-running the indexer **backfills it onto an
+existing index for free** — no re-embedding, since chunk IDs are
+date-independent. If `SearchIndex.load` raises `IndexCorruptError` about a
+missing `report_date` column, your index predates the horizon change; just
+re-run `python -m verifier.index --all`.
 
 ### Run the verifier
 

@@ -45,8 +45,10 @@ python -m verifier.label --claims <claims.csv> --claim-id <id> --labeler <you>
    bounded by the claim's resolved horizon (plus a reporting lag), or ~2 years
    past the call when the horizon is unresolved — so an open-ended claim does
    not pull every filing through to the present.
-4. Runs a deterministic keyword sweep (the per-claim-type term list) and prints
-   the claim plus the candidate passages.
+4. Runs a deterministic keyword sweep (the per-claim-type term list), drops
+   inline-XBRL noise, ranks hits by a transparent keyword-specificity score
+   (specific line-item phrases / dollar-adjacent hits first), and prints the
+   claim plus the candidate passages.
 5. Interactive `evidence>` prompt: `<numbers>` (e.g. `1,3`) to pick evidence,
    `more <term>` to search an extra keyword, `all` to show every hit, `none`,
    or `quit`.
@@ -89,7 +91,10 @@ Optional flags: `--gold`, `--forms`, `--from`, `--until`, `--context`.
 
 Auto-labeling, verdict *suggestion*, and semantic / embedding retrieval. The
 tool surfaces candidates and records the human's decision; it never proposes a
-verdict or ranks passages by relevance.
+verdict, and any ordering it applies is a transparent deterministic
+keyword-specificity rank (`_relevance`: multi-word line-item phrases and
+dollar-adjacent hits first) — never an embedding or LLM relevance ranking. The
+labeler still reads the filing and decides what counts as evidence.
 
 ## Files & tests
 

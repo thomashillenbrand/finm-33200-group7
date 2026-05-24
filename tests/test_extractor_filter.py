@@ -1,18 +1,32 @@
-"""Tests for the figure-required scope filter (workstream B).
+"""Tests for the workstream-B scope filters.
 
-Per the workstream-B scope decision, numerical-guidance claims must state a
-specific figure; capital-allocation claims are kept regardless of whether an
-amount is given.
+Two filters run in the extraction pipeline:
+
+  - ``filter_unquantified_guidance`` -- numerical-guidance claims must state a
+    specific figure; capital-allocation claims are kept regardless of whether
+    an amount is given.
+  - ``filter_unresolved_horizon`` -- every surviving claim, of either type,
+    must resolve to an absolute horizon end date; claims whose horizon could
+    not be resolved are dropped because workstream C cannot pick a filing
+    window for them.
 """
 
 from datetime import date
 
-from extractor.extract import filter_unquantified_guidance
+from extractor.extract import (
+    filter_unquantified_guidance,
+    filter_unresolved_horizon,
+)
 from schemas import Claim
 
 
-def _claim(claim_type: str, quote: str) -> Claim:
-    """A minimal valid Claim with a caller-chosen type and verbatim quote."""
+def _claim(claim_type: str, quote: str, *, horizon_end: date | None = None) -> Claim:
+    """A minimal valid Claim with a caller-chosen type and verbatim quote.
+
+    ``horizon_end`` populates ``horizon_end_date`` -- defaults to ``None`` so
+    figure-filter tests are unaffected, and is set explicitly by the
+    horizon-filter tests.
+    """
     return Claim(
         claim_id="x",
         ticker="TSLA",
@@ -23,6 +37,7 @@ def _claim(claim_type: str, quote: str) -> Claim:
         claim_type=claim_type,
         verbatim_quote=quote,
         summary="A claim.",
+        horizon_end_date=horizon_end,
         transcript_id=1,
         component_id=100,
     )
@@ -94,3 +109,84 @@ def test_mixed_batch_keeps_quantified_guidance_and_all_capital_allocation():
     kept = filter_unquantified_guidance(claims)
     assert [c.claim_type for c in kept] == ["numerical_guidance", "capital_allocation"]
     assert kept[0].verbatim_quote == "Revenue will be $24 billion."
+
+
+# --- filter_unresolved_horizon -------------------------------------------------
+
+
+def test_filter_unresolved_horizon_drops_claims_with_no_end_date():
+    """A claim whose horizon never resolved has no filing window -- drop it."""
+    claims = [_claim("numerical_guidance", "Revenue will be $24 billion.")]
+    assert filter_unresolved_horizon(claims) == []
+
+
+def test_filter_unresolved_horizon_prunes_both_claim_types():
+    """The horizon prune is a blanket rule -- it applies to capital-allocation
+    claims too, unlike the figure filter which exempts them."""
+    claims = [
+        _claim("numerical_guidance", "Revenue will be $24 billion."),
+        _claim("capital_allocation", "We plan to repurchase shares."),
+    ]
+    assert filter_unresolved_horizon(claims) == []
+
+
+def test_filter_unresolved_horizon_keeps_all_when_resolved():
+    """Claims with a resolved end date survive, regardless of type."""
+    claims = [
+        _claim(
+            "numerical_guidance",
+            "Revenue will be $24 billion.",
+            horizon_end=date(2024, 12, 31),
+        ),
+        _claim(
+            "capital_allocation",
+            "We plan to repurchase shares.",
+            horizon_end=date(2024, 6, 30),
+        ),
+    ]
+    assert len(filter_unresolved_horizon(claims)) == 2
+
+
+def test_filter_unresolved_horizon_keeps_only_the_resolved_claim():
+    claims = [
+        _claim(
+            "numerical_guidance",
+            "Revenue will be $24 billion.",
+            horizon_end=date(2024, 12, 31),
+        ),                                                          # keep
+        _claim("capital_allocation", "We plan to repurchase shares."),  # drop
+    ]
+    kept = filter_unresolved_horizon(claims)
+    assert [c.claim_type for c in kept] == ["numerical_guidance"]
+
+
+def test_filter_unresolved_horizon_drops_horizon_on_or_before_call_date():
+    """A horizon resolving to the call date or earlier leaves no filing window
+    -- it is a mis-extracted past-result claim or a wrong horizon phrase, and
+    is dropped just like an unresolved horizon. The call date here is
+    2024-01-24 (see ``_claim``)."""
+    claims = [
+        _claim(
+            "numerical_guidance",
+            "In 2023 we spent $2 billion.",
+            horizon_end=date(2023, 12, 31),   # before the call
+        ),
+        _claim(
+            "capital_allocation",
+            "Q1 capex was $1 billion.",
+            horizon_end=date(2024, 1, 24),    # exactly the call date
+        ),
+    ]
+    assert filter_unresolved_horizon(claims) == []
+
+
+def test_filter_unresolved_horizon_keeps_horizon_one_day_after_call():
+    """A horizon ending the day after the call is a valid forward window."""
+    claims = [
+        _claim(
+            "numerical_guidance",
+            "Revenue will be $24 billion.",
+            horizon_end=date(2024, 1, 25),    # one day after the call
+        ),
+    ]
+    assert len(filter_unresolved_horizon(claims)) == 1

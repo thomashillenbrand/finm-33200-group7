@@ -31,10 +31,27 @@ CALL = date(2022, 4, 20)
         ("the rest of the year", CALL, ("FY2022", date(2022, 12, 31))),
         # relative multi-year
         ("over the next three years", date(2021, 7, 26), ("FY2024", date(2024, 12, 31))),
+        # relative fractional-year span -- resolved via months, not FY+5
+        ("over the next 1.5 years", date(2020, 7, 22), ("18 months", date(2022, 1, 22))),
+        ("over the next 3.5 years", CALL, ("42 months", date(2025, 10, 20))),
         # relative months
         ("next 12 months", CALL, ("12 months", date(2023, 4, 20))),
         # half-year
         ("in the second half", CALL, ("H2 2022", date(2022, 12, 31))),
+        ("the first half of next year", CALL, ("H1 2023", date(2023, 6, 30))),
+        ("the second half of next year", CALL, ("H2 2023", date(2023, 12, 31))),
+        # bare quarter, no year -- resolves vs the call's own quarter (Q2 2022)
+        ("Q3", CALL, ("Q3 2022", date(2022, 9, 30))),
+        ("Q1", CALL, ("Q1 2023", date(2023, 3, 31))),
+        ("quarter 2", CALL, ("Q2 2022", date(2022, 6, 30))),
+        ("the fourth quarter", CALL, ("Q4 2022", date(2022, 12, 31))),
+        ("the first quarter", CALL, ("Q1 2023", date(2023, 3, 31))),
+        # bare month, no year
+        ("by the end of March", CALL, ("Q1 2023", date(2023, 3, 31))),
+        ("by the end of May", CALL, ("Q2 2022", date(2022, 5, 31))),
+        # current-year shorthands
+        ("by end of year", CALL, ("FY2022", date(2022, 12, 31))),
+        ("for the year", CALL, ("FY2022", date(2022, 12, 31))),
         # vague
         ("over the long term", CALL, ("long-term", None)),
     ],

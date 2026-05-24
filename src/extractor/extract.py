@@ -7,9 +7,10 @@ Per the workstream-B design decisions:
   - Schema: lightweight (type + verbatim quote + summary + horizon), two claim
     types -- ``numerical_guidance`` and ``capital_allocation``.
   - Horizons: resolved to absolute dates *and* kept raw.
-  - Scope: numerical guidance must state a specific figure -- a directional-only
-    guidance claim is dropped by ``filter_unquantified_guidance``;
-    ``capital_allocation`` claims are kept regardless.
+  - Scope: numerical guidance must state a specific figure
+    (``filter_unquantified_guidance``); every surviving claim must resolve to a
+    horizon end date or it is pruned as unverifiable
+    (``filter_unresolved_horizon``).
 
 Structured output is enforced with LangChain's ``.with_structured_output()``
 against ``ExtractionResponse`` -- the same pattern the verifier uses.
@@ -97,6 +98,37 @@ def build_extractor(model_name: str | None = None):
     return llm.with_structured_output(ExtractionResponse)
 
 
+def _source_context(call: EarningsCall, component_id: int) -> str:
+    """The source turn plus the turn immediately before it.
+
+    Gives workstream C enough surrounding text to understand a sparse quote --
+    notably, for a Q&A answer the preceding turn is the analyst's question.
+    The preceding turn is taken from the call's full turn order (analyst and
+    operator turns included). Empty when the quote could not be located to a
+    turn.
+
+    The result is single-line: each turn's text has its internal whitespace
+    (newlines included) collapsed to single spaces, and the turns are joined
+    with a `` || `` marker. Transcript turns are themselves multi-line, so
+    keeping this field newline-free is what lets the output CSV open correctly
+    in a spreadsheet -- an embedded newline in a quoted cell is valid CSV but
+    is mis-rendered as extra rows by some spreadsheet apps.
+    """
+    if not component_id:
+        return ""
+    turns = call.turns
+    idx = next(
+        (i for i, t in enumerate(turns) if t.component_id == component_id), None
+    )
+    if idx is None:
+        return ""
+    lo, hi = max(0, idx - 1), idx + 1
+    return " || ".join(
+        " ".join(f"{t.speaker_name} ({t.component_type}): {t.text}".split())
+        for t in turns[lo:hi]
+    )
+
+
 def _enrich(
     extracted: ExtractedClaim,
     call: EarningsCall,
@@ -125,6 +157,7 @@ def _enrich(
         verbatim_quote=extracted.verbatim_quote,
         quote_verbatim=match.verbatim,
         summary=extracted.summary,
+        source_context=_source_context(call, component_id),
         horizon_raw=extracted.horizon_raw,
         horizon_period=horizon_period,
         horizon_end_date=horizon_end,
@@ -171,6 +204,25 @@ def filter_unquantified_guidance(claims: list[Claim]) -> list[Claim]:
     return kept
 
 
+def filter_unresolved_horizon(claims: list[Claim]) -> list[Claim]:
+    """Drop claims whose horizon is unusable for verification.
+
+    A claim is dropped when its horizon either (a) could not be resolved to an
+    end date at all, or (b) resolved to a date on or before the call date.
+    Both leave workstream C with no valid filing window: a forward-looking
+    claim must point *past* the call, so a horizon ending at or before it
+    signals either an unresolved phrase or a mis-extracted past-result
+    statement ("in 2021 we incurred...", "since 2020 we have committed..."). The
+    rule is a blanket one, applied to both claim types. The raw horizon wording
+    is kept on every surviving claim for audit; only the unusable ones drop.
+    """
+    return [
+        c
+        for c in claims
+        if c.horizon_end_date is not None and c.horizon_end_date > c.call_date
+    ]
+
+
 def dedupe_claims(claims: list[Claim]) -> list[Claim]:
     """Drop exact-duplicate claims, keeping the first occurrence of each.
 
@@ -203,9 +255,13 @@ def dedupe_similar_claims(claims: list[Claim]) -> list[Claim]:
     verbatim wording -- a different quote, hence a different ``claim_id`` --
     which that pass cannot catch (a pilot showed two copies of one claim
     surviving). This pass drops a claim when an earlier kept claim shares its
-    *located* source turn and claim type and has a near-identical quote.
-    Claims from different turns, and unlocated claims (``component_id`` 0), are
-    never merged.
+    *located* source turn and claim type and either has a near-identical quote
+    *or* has a quote that fully contains, or is contained by, this claim's
+    quote. The substring case matters because the model often emits one claim
+    as a sub-span of another from the same sentence ("...$2 billion in capex"
+    vs "...$2 billion in capex, which we will fund from cash") -- a containment
+    that a similarity *ratio* scores low when the lengths differ. Claims from
+    different turns, and unlocated claims (``component_id`` 0), are never merged.
     """
     kept: list[Claim] = []
     for claim in claims:
@@ -217,10 +273,13 @@ def dedupe_similar_claims(claims: list[Claim]) -> list[Claim]:
                 and earlier.component_id == claim.component_id
                 and earlier.claim_type == claim.claim_type
             ):
-                ratio = difflib.SequenceMatcher(
-                    None, _quote_key(earlier.verbatim_quote), key
-                ).ratio()
-                if ratio >= _SIMILAR_QUOTE_THRESHOLD:
+                earlier_key = _quote_key(earlier.verbatim_quote)
+                ratio = difflib.SequenceMatcher(None, earlier_key, key).ratio()
+                if (
+                    ratio >= _SIMILAR_QUOTE_THRESHOLD
+                    or key in earlier_key
+                    or earlier_key in key
+                ):
                     is_dup = True
                     break
         if not is_dup:
@@ -236,11 +295,11 @@ def extract_call(
 ) -> list[Claim]:
     """Extract claims from one earnings call.
 
-    Returns ``[]`` if the call has no management turns. Numerical-guidance
-    claims with no stated figure are dropped, then exact-duplicate and
-    same-turn near-duplicate claims are removed. Pass a pre-built ``extractor``
-    (from ``build_extractor``) to avoid re-creating the client when processing
-    many calls.
+    Returns ``[]`` if the call has no management turns. Post-processing, in
+    order: drop numerical-guidance claims with no figure; prune claims whose
+    horizon did not resolve to an end date; remove exact-duplicate and then
+    same-turn near-duplicate claims. Pass a pre-built ``extractor`` (from
+    ``build_extractor``) to avoid re-creating the client across many calls.
     """
     if not call.management_turns():
         return []
@@ -262,6 +321,7 @@ def extract_call(
     extracted_at = datetime.now(timezone.utc)
     claims = [_enrich(ec, call, model_name, extracted_at) for ec in response.claims]
     claims = filter_unquantified_guidance(claims)
+    claims = filter_unresolved_horizon(claims)
     claims = dedupe_claims(claims)
     claims = dedupe_similar_claims(claims)
     return claims

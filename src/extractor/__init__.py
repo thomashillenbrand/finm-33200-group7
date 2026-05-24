@@ -12,6 +12,7 @@ from extractor.extract import (
     extract_call,
     extract_transcript,
     filter_unquantified_guidance,
+    filter_unresolved_horizon,
 )
 from extractor.horizon import resolve_horizon
 from extractor.output import write_claims_csv
@@ -42,6 +43,7 @@ __all__ = [
     "extract_call",
     "extract_transcript",
     "filter_unquantified_guidance",
+    "filter_unresolved_horizon",
     "dedupe_claims",
     "dedupe_similar_claims",
     "write_claims_csv",

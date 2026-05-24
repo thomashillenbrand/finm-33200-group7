@@ -64,6 +64,16 @@ def test_dedupe_empty_list():
 _NEAR_A = "we expect to install solar roofs at a rate of about one thousand a week"
 _NEAR_B = "we expect to install solar roofs at a rate of around one thousand a week"
 
+# A short claim quote and a longer one that fully contains it -- the model
+# emitting one claim as a sub-span of another from the same sentence. The
+# length gap keeps their similarity ratio well under the 0.88 threshold, so
+# only substring containment catches this pair.
+_FRAG_SHORT = "we plan to increase capital spending by two billion dollars"
+_FRAG_LONG = (
+    "we plan to increase capital spending by two billion dollars, which we "
+    "will fund entirely from operating cash flow and existing liquidity"
+)
+
 
 def test_similar_dedup_drops_same_turn_near_identical_quote():
     claims = [
@@ -73,6 +83,39 @@ def test_similar_dedup_drops_same_turn_near_identical_quote():
     result = dedupe_similar_claims(claims)
     assert len(result) == 1
     assert result[0].claim_id == "A"          # first occurrence kept
+
+
+def test_similar_dedup_drops_same_turn_substring_fragment():
+    """A quote that is a strict sub-span of another claim's quote from the same
+    turn is a fragment duplicate -- a length gap the similarity ratio scores
+    too low, so substring containment is what catches it."""
+    claims = [
+        _claim("A", component_id=200, quote=_FRAG_SHORT),
+        _claim("B", component_id=200, quote=_FRAG_LONG),
+    ]
+    result = dedupe_similar_claims(claims)
+    assert len(result) == 1
+    assert result[0].claim_id == "A"          # first occurrence kept
+
+
+def test_similar_dedup_substring_caught_in_either_order():
+    """Containment is caught whichever sub-span the model emits first."""
+    claims = [
+        _claim("A", component_id=200, quote=_FRAG_LONG),
+        _claim("B", component_id=200, quote=_FRAG_SHORT),
+    ]
+    result = dedupe_similar_claims(claims)
+    assert len(result) == 1
+    assert result[0].claim_id == "A"          # first occurrence kept
+
+
+def test_similar_dedup_substring_only_merges_within_a_turn():
+    """A substring match across two different turns is never merged."""
+    claims = [
+        _claim("A", component_id=200, quote=_FRAG_SHORT),
+        _claim("B", component_id=201, quote=_FRAG_LONG),
+    ]
+    assert len(dedupe_similar_claims(claims)) == 2
 
 
 def test_similar_dedup_keeps_distinct_claims_from_same_turn():

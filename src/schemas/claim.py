@@ -55,6 +55,12 @@ class Claim(BaseModel):
         "turn; False if it was only fuzzy-matched or could not be located.",
     )
     summary: str = Field(min_length=1)
+    source_context: str = Field(
+        default="",
+        description="The source turn plus the turn immediately before it "
+        "(same call), so a sparse verbatim_quote can be understood in "
+        "context. Empty if the quote could not be located to a turn.",
+    )
 
     # --- Horizon: raw wording kept for audit, plus a resolved period/date ---
     horizon_raw: str = ""
@@ -107,6 +113,7 @@ CSV_FIELDS: tuple[str, ...] = (
     "verbatim_quote",
     "quote_verbatim",
     "summary",
+    "source_context",
     "horizon_raw",
     "horizon_period",
     "horizon_end_date",
