@@ -105,15 +105,23 @@ agent-free helper (`verifier.label`) or read the filings directly.
 
 ## Workflow
 
+The labeling helper (`verifier.label`) is interactive — one command per claim.
+
 1. Run `python -m verifier.label --claims <claims.csv> --claim-id <id>
-   --labeler <you>` to see the claim and the filings filed after the call.
-2. Add `--query <term>` to search those filings; the helper prints paste-ready
-   `GoldEvidence` fragments.
-3. Read the filings yourself, decide the verdict against this rubric, and fill
-   the printed `GoldLabel` skeleton (`verdict`, `confidence`, `labeler_notes`,
-   and the evidence fragments you judged relevant).
-4. Append the line to `data/gold/pilot_<ticker>.jsonl` and validate it with the
-   one-liner in `data/gold/README.md` (`verifier.gold.load_gold_labels`).
+   --labeler <you>`. It shows the claim, runs a keyword sweep over the filings
+   filed after the call (bounded to the claim's horizon, or ~2 years when the
+   horizon is unresolved), and lists candidate passages.
+2. At the prompt: type `more <term>` to search additional keywords, `all` to
+   show every sweep hit, then enter the numbers of the passages that are real
+   evidence (e.g. `1,3`). **Open and read the filings yourself** before
+   accepting a passage — the helper locates candidates, you judge them. A
+   capital-allocation magnitude usually lives in a cash-flow-statement table,
+   which flattens poorly as text, so open the filing HTML to confirm it.
+3. When prompted, choose the verdict against this rubric and a confidence, and
+   add `labeler_notes` — especially for boundary calls.
+4. The helper validates the `GoldLabel` and appends it to
+   `data/gold/pilot_<ticker>.jsonl`. It never overwrites; re-running on an
+   already-labeled claim asks first before adding a second label.
 
 ## Open decisions for the rubric owner
 

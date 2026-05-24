@@ -1,23 +1,24 @@
 """Agent-free gold-set labeling helper (`python -m verifier.label`).
 
-For one extracted claim, this CLI surfaces the SEC filings to read and helps a
-human locate + copy the relevant passages into a valid gold-set row. It removes
-the *mechanical* friction of labeling — finding accession numbers, locating
-passages in HTML, hand-formatting JSON. The human still reads the filings and
-assigns the verdict (see `docs/labeling_rubric.md`).
+Interactive: one command per claim. For a given claim_id it runs a deterministic
+keyword sweep over the claim's post-call SEC filings, shows candidate passages,
+and walks the labeler through picking evidence and assigning a verdict in the
+terminal -- then appends one validated GoldLabel row to the gold JSONL. No
+hand-editing of files.
 
-INDEPENDENCE CONSTRAINT (load-bearing — do not break).
+    python -m verifier.label --claims data/claims/pilot_claims.csv \\
+        --claim-id TSLA_20200129_xxxx --labeler brendan
+
+INDEPENDENCE CONSTRAINT (load-bearing -- do not break).
 The gold set grades the verification agent's retrieval (recall@k). If a labeler
 seeds evidence from what the agent surfaced, that score is circular. So this
 module must NOT import or call any of: `verifier.agent` / `verify`, `faiss`,
-`OpenAIEmbeddings`, `verifier.tools`, and must NOT read the `index/` artifacts
-(`chunks.parquet` / `faiss.index`). It finds evidence by an independent
-mechanism: deterministic keyword/regex search over the raw filing text.
+`OpenAIEmbeddings`, `verifier.tools`, and must NOT read the `index/` artifacts.
+The sweep is deterministic keyword search -- it never ranks by embeddings or an
+LLM, and the labeler (not the tool) decides what counts as evidence.
 
-It deliberately does NOT reuse `verifier.index.extract_text_from_html`: importing
-`verifier.index` would transitively pull `faiss` and `OpenAIEmbeddings` into this
-module's import graph, breaking the constraint above. The small `_html_to_text`
-helper here is pure HTML->text with no ranking, so duplicating it is safe.
+This supersedes the print-only design in `docs/labeling-helper-design.md`
+(interactive grading + auto sweep were added for labeling-throughput).
 """
 
 from __future__ import annotations
@@ -28,31 +29,36 @@ import json
 import re
 import sys
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 from bs4 import BeautifulSoup
 
 from schemas import Claim
-from verifier.gold import GoldEvidence
+from verifier.gold import GoldEvidence, GoldLabel
 
-# Root for data_pull's per-ticker output. Patchable so tests can point it at a
-# fixture directory.
+# Root for data_pull's per-ticker output; gold-set directory. Both patchable.
 PULLED_DATA_ROOT = Path("Pulled_data")
+GOLD_DIR = Path("data/gold")
 
-# Gold evidence may only come from these forms (matches GoldEvidence.form).
 _FORMS: tuple[str, ...] = ("10-K", "10-Q", "8-K")
+_DEFAULT_WINDOW_DAYS = 730       # ~2 years, when the claim horizon is unresolved
+_REPORTING_LAG_DAYS = 150        # filing that reports a period lands months later
+_DISPLAY_LIMIT = 5
 
-# Suggested --query terms by claim type, printed when no --query is given. A
-# deterministic aid that closes most of the keyword-misses-paraphrase gap
-# without an LLM (a labeler searching "buyback" would otherwise miss a filing
-# that says "repurchases of common stock").
-_QUERY_HINTS: dict[str, list[str]] = {
+_VERDICTS = ("verified", "partially_verified", "contradicted", "not_yet_resolvable")
+_DECISIVE = {"verified", "partially_verified", "contradicted"}
+_CONFIDENCE = {"h": "high", "m": "medium", "l": "low"}
+
+# Deterministic per-claim-type sweep terms -- the keyword loop a labeler would
+# otherwise run by hand. No LLM, no embeddings: this stays an independent,
+# transparent search.
+_SWEEP_TERMS: dict[str, list[str]] = {
     "capital_allocation": [
         "repurchase", "buyback", "treasury stock",
         "dividend", "distribution",
-        "capital expenditures", "capex", "property and equipment",
+        "capital expenditures", "property and equipment",
         "senior notes", "credit facility", "borrowings", "repaid", "redeemed",
     ],
 }
@@ -60,11 +66,32 @@ _QUERY_HINTS: dict[str, list[str]] = {
 
 @dataclass
 class Match:
-    """One keyword/regex hit inside a filing's text."""
+    """One keyword hit inside a filing's text."""
 
     char_start: int
     char_end: int
     snippet: str
+
+
+@dataclass
+class Candidate:
+    """One sweep hit, ready to be shown and (if chosen) turned into evidence."""
+
+    accession_no: str
+    form: str
+    filing_date: date
+    local_path: str
+    term: str
+    snippet: str
+
+    def to_evidence(self) -> GoldEvidence:
+        return GoldEvidence(
+            accession_no=self.accession_no,
+            form=self.form,
+            filing_date=self.filing_date,
+            quote=self.snippet[:500],          # schema cap
+            section=None,
+        )
 
 
 # ── HTML -> text ───────────────────────────────────────────────────────────
@@ -79,10 +106,8 @@ def _html_to_text(html_bytes: bytes) -> str:
     return "\n".join(ln for ln in lines if ln)
 
 
-# ── Claim loading (CSV row -> schemas.Claim) ───────────────────────────────
+# ── Claim loading ──────────────────────────────────────────────────────────
 
-# Optional date/datetime fields are written as "" by the extractor's CSV
-# writer; restore them to None before constructing the pydantic model.
 _OPTIONAL_DATE_FIELDS = ("horizon_end_date", "extracted_at")
 
 
@@ -118,6 +143,20 @@ def _load_filing_index(ticker: str) -> pd.DataFrame:
     return df
 
 
+def grading_window(claim: Claim) -> date:
+    """Upper date bound for filings worth scanning.
+
+    The claim's resolved horizon end (plus a reporting lag, since the filing
+    that *reports* a period is filed months after it), or -- when the horizon
+    is unresolved -- ~2 years after the call, so an open-ended claim does not
+    pull every filing through to the present.
+    """
+    base = claim.horizon_end_date
+    if base is None:
+        base = claim.call_date + timedelta(days=_DEFAULT_WINDOW_DAYS)
+    return base + timedelta(days=_REPORTING_LAG_DAYS)
+
+
 def candidate_filings(
     claim: Claim,
     index_df: pd.DataFrame,
@@ -126,8 +165,8 @@ def candidate_filings(
     from_date: date | None = None,
     until_date: date | None = None,
 ) -> pd.DataFrame:
-    """Filings that could hold evidence for ``claim``: filed strictly after the
-    call, restricted to ``forms``, optionally bounded, sorted by date."""
+    """Filings that could hold evidence: filed strictly after the call,
+    restricted to ``forms``, optionally bounded, sorted by date."""
     df = index_df[index_df["form"].isin(forms)].copy()
     df = df[df["filingDate"] > claim.call_date]
     if from_date is not None:
@@ -138,20 +177,16 @@ def candidate_filings(
 
 
 def _resolve_filing_path(sec_dir: Path, local_path: str) -> Path:
-    """Join a localPath from the index (stored with Windows separators) to disk."""
+    """Join a localPath from the index (Windows separators) to disk."""
     return sec_dir / Path(str(local_path).replace("\\", "/"))
 
 
-# ── Keyword search ─────────────────────────────────────────────────────────
+# ── Keyword search + sweep ─────────────────────────────────────────────────
 
 def search_filing(
     text: str, query: str, *, regex: bool = False, context: int = 240
 ) -> list[Match]:
-    """Find every case-insensitive hit of ``query`` in ``text``.
-
-    Literal substring by default; ``regex=True`` compiles ``query`` as a regex.
-    Each Match carries a +/- ``context`` character window around the hit.
-    """
+    """Every case-insensitive hit of ``query`` in ``text`` (+/- context window)."""
     pattern = re.compile(query if regex else re.escape(query), re.IGNORECASE)
     matches: list[Match] = []
     for m in pattern.finditer(text):
@@ -161,9 +196,66 @@ def search_filing(
     return matches
 
 
+def sweep(
+    filings_df: pd.DataFrame,
+    sec_dir: Path,
+    *,
+    terms: list[str],
+    context: int = 240,
+) -> list[Candidate]:
+    """Deterministic keyword sweep: per filing, the first hit of each term.
+
+    Returns candidates in filing-date then term order -- a fixed, transparent
+    ordering, not a relevance ranking.
+    """
+    candidates: list[Candidate] = []
+    for row in filings_df.itertuples(index=False):
+        fpath = _resolve_filing_path(sec_dir, row.localPath)
+        if not fpath.exists():
+            continue
+        text = _html_to_text(fpath.read_bytes())
+        for term in terms:
+            hits = search_filing(text, term, context=context)
+            if hits:
+                candidates.append(Candidate(
+                    accession_no=str(row.accessionNumber),
+                    form=str(row.form),
+                    filing_date=row.filingDate,
+                    local_path=str(row.localPath),
+                    term=term,
+                    snippet=hits[0].snippet,
+                ))
+    return candidates
+
+
+# ── Gold-file I/O ──────────────────────────────────────────────────────────
+
+def load_gold_claim_ids(gold_path: Path) -> set[str]:
+    """claim_ids already present in the gold JSONL (lenient: skips bad lines)."""
+    if not gold_path.exists():
+        return set()
+    ids: set[str] = set()
+    for line in gold_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ids.add(json.loads(line).get("claim_id", ""))
+        except json.JSONDecodeError:
+            continue
+    return ids - {""}
+
+
+def append_gold_label(gold_path: Path, label: GoldLabel) -> None:
+    """Append one validated GoldLabel as a JSON line (never rewrites the file)."""
+    gold_path.parent.mkdir(parents=True, exist_ok=True)
+    with gold_path.open("a", encoding="utf-8") as fh:
+        fh.write(label.model_dump_json() + "\n")
+
+
 # ── Rendering ──────────────────────────────────────────────────────────────
 
-def _render_claim(claim: Claim) -> str:
+def _render_claim(claim: Claim, until_date: date) -> str:
     return (
         f"=== CLAIM {claim.claim_id} ===\n"
         f"  {claim.ticker} ({claim.company}) -- call {claim.call_date}\n"
@@ -171,93 +263,176 @@ def _render_claim(claim: Claim) -> str:
         f"  quote:   {claim.verbatim_quote}\n"
         f"  summary: {claim.summary}\n"
         f"  horizon: {claim.horizon_raw or '(none stated)'}  ->  "
-        f"{claim.horizon_period or '(unresolved)'} "
-        f"(end {claim.horizon_end_date or 'n/a'})\n"
-        f"  Evidence must come from filings filed AFTER {claim.call_date}."
+        f"{claim.horizon_period or '(unresolved)'}\n"
+        f"  Grading filings filed {claim.call_date} .. {until_date}."
     )
 
 
-def _render_filing_list(df: pd.DataFrame) -> str:
-    if df.empty:
-        return ("\nNo candidate filings: none in the requested forms were filed "
-                "after the call date.")
-    lines = ["", f"=== {len(df)} candidate filing(s) filed after the call ==="]
-    for r in df.itertuples(index=False):
-        lines.append(
-            f"  {r.form:<5} {r.filingDate}  {r.accessionNumber}  {r.localPath}"
-        )
-    return "\n".join(lines)
+def _render_candidate(index: int, c: Candidate) -> str:
+    return (f"  [{index}] {c.form} filed {c.filing_date}  acc {c.accession_no}"
+            f"  (matched: {c.term})\n      ...{c.snippet}...")
 
 
-def _render_query_hint(claim: Claim) -> str:
-    terms = _QUERY_HINTS.get(claim.claim_type)
-    if terms:
-        joined = ", ".join(f'"{t}"' for t in terms)
-        return ("\nNo --query given. Re-run with --query to search the filings "
-                f"above.\nSuggested terms for a {claim.claim_type} claim: {joined}")
-    return '\nNo --query given. Re-run with --query "<term>" to search the filings above.'
+# ── Interactive session ────────────────────────────────────────────────────
+
+def _prompt_verdict(say, ask, *, has_evidence: bool) -> str | None:
+    say("\nVerdict (see docs/labeling_rubric.md):")
+    for i, v in enumerate(_VERDICTS, 1):
+        say(f"  {i}  {v}")
+    while True:
+        raw = ask("verdict> ").strip()
+        if raw == "quit":
+            return None
+        if raw.isdigit() and 1 <= int(raw) <= len(_VERDICTS):
+            verdict = _VERDICTS[int(raw) - 1]
+            if verdict in _DECISIVE and not has_evidence:
+                say(f"  {verdict!r} needs at least one evidence passage; you "
+                    f"selected none. Choose 4 (not_yet_resolvable) or 'quit' "
+                    f"and re-run to pick evidence.")
+                continue
+            return verdict
+        say(f"  (enter 1..{len(_VERDICTS)}, or 'quit')")
 
 
-def _render_evidence(filing_row, match: Match) -> str:
-    """Header + context window + a paste-ready GoldEvidence JSON fragment."""
-    quote = match.snippet
-    truncated = len(quote) > 500
-    if truncated:
-        quote = quote[:500]
-    fragment = GoldEvidence(
-        accession_no=str(filing_row.accessionNumber),
-        form=filing_row.form,
-        filing_date=filing_row.filingDate,
-        quote=quote,
-        section=None,
-    )
-    header = (f"[{filing_row.form} filed {filing_row.filingDate} | "
-              f"accession {filing_row.accessionNumber} | open: {filing_row.localPath}]")
-    note = "\n  (quote truncated to 500 chars)" if truncated else ""
-    return (f"\n{header}\n"
-            f"  ...{match.snippet}...\n"
-            f"  fragment: {fragment.model_dump_json()}{note}")
+def _prompt_confidence(say, ask) -> str | None:
+    while True:
+        raw = ask("confidence [h/m/l]> ").strip().lower()
+        if raw == "quit":
+            return None
+        if raw in _CONFIDENCE:
+            return _CONFIDENCE[raw]
+        say("  (enter h, m, or l)")
 
 
-def _render_skeleton(claim: Claim, labeler: str) -> str:
-    """A GoldLabel line with placeholder verdict/confidence.
-
-    The placeholders are intentionally invalid, so `verifier.gold.load_gold_labels`
-    rejects the row until a human fills them -- a forgotten verdict fails loud.
+def run_session(
+    claim: Claim,
+    filings_df: pd.DataFrame,
+    sec_dir: Path,
+    gold_path: Path,
+    labeler: str,
+    until_date: date,
+    *,
+    context: int = 240,
+    limit: int = _DISPLAY_LIMIT,
+    ask=input,
+    say=print,
+) -> GoldLabel | None:
+    """Interactively grade one claim and append a GoldLabel. Returns the label,
+    or None if the labeler aborted. ``ask``/``say`` are injectable for testing.
     """
-    skeleton = {
-        "claim_id": claim.claim_id,
-        "ticker": claim.ticker,
-        "labeler": labeler,
-        "labeled_at": datetime.now().isoformat(timespec="seconds"),
-        "expected_evidence": [],
-        "verdict": "<FILL: verified|partially_verified|contradicted|not_yet_resolvable>",
-        "confidence": "<FILL: high|medium|low>",
-        "labeler_notes": "",
-    }
-    return json.dumps(skeleton)
+    say(_render_claim(claim, until_date))
+
+    candidates = sweep(
+        filings_df, sec_dir,
+        terms=list(_SWEEP_TERMS.get(claim.claim_type, [])), context=context,
+    )
+    shown = 0
+
+    def _show(upto: int) -> None:
+        nonlocal shown
+        for i in range(shown, min(upto, len(candidates))):
+            say(_render_candidate(i + 1, candidates[i]))
+        shown = max(shown, min(upto, len(candidates)))
+
+    say(f"\n{len(candidates)} candidate passage(s) from the keyword sweep:")
+    if not candidates:
+        say("  (none -- use 'more <term>' to search, or 'none' for no evidence)")
+    _show(limit)
+    if len(candidates) > shown:
+        say(f"  ... +{len(candidates) - shown} more (type 'all' to show)")
+    say("\nCommands:  <numbers> e.g. 1,3 = pick evidence | more <term> = search "
+        "another keyword | all = show all | none = no evidence | quit = abort")
+
+    selected: list[int] = []
+    while True:
+        raw = ask("evidence> ").strip()
+        if raw == "quit":
+            say("Aborted; nothing written.")
+            return None
+        if raw == "all":
+            _show(len(candidates))
+            continue
+        if raw == "none":
+            selected = []
+            break
+        if raw.startswith("more "):
+            term = raw[5:].strip()
+            if not term:
+                say("  (usage: more <keyword>)")
+                continue
+            existing = {(c.accession_no, c.snippet) for c in candidates}
+            found = sweep(filings_df, sec_dir, terms=[term], context=context)
+            added = [c for c in found if (c.accession_no, c.snippet) not in existing]
+            candidates.extend(added)
+            say(f"  +{len(added)} new hit(s) for {term!r}.")
+            _show(len(candidates))
+            continue
+        try:
+            nums = [int(x) for x in raw.replace(",", " ").split()]
+        except ValueError:
+            say("  (enter candidate numbers like '1,3', or a command)")
+            continue
+        if nums and all(1 <= n <= len(candidates) for n in nums):
+            selected = sorted(set(nums))
+            break
+        say(f"  (numbers must be 1..{len(candidates)})")
+
+    evidence = [candidates[n - 1].to_evidence() for n in selected]
+    if evidence:
+        say(f"Selected {len(evidence)} evidence passage(s).")
+
+    verdict = _prompt_verdict(say, ask, has_evidence=bool(evidence))
+    if verdict is None:
+        say("Aborted; nothing written.")
+        return None
+    confidence = _prompt_confidence(say, ask)
+    if confidence is None:
+        say("Aborted; nothing written.")
+        return None
+    notes = ask("notes (optional)> ").strip()
+
+    try:
+        label = GoldLabel(
+            claim_id=claim.claim_id,
+            ticker=claim.ticker,
+            labeler=labeler,
+            labeled_at=datetime.now(),
+            expected_evidence=evidence,
+            verdict=verdict,
+            confidence=confidence,
+            labeler_notes=notes,
+        )
+    except Exception as exc:                              # schema rejected it
+        say(f"Could not build a valid label: {exc}\nNothing written.")
+        return None
+
+    append_gold_label(gold_path, label)
+    say(f"\nWrote 1 label for {claim.claim_id} -> {gold_path}")
+    say(label.model_dump_json())
+    return label
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="verifier.label", description=__doc__)
+    p = argparse.ArgumentParser(
+        prog="verifier.label",
+        description="Interactive agent-free gold-set labeling helper.",
+    )
     p.add_argument("--claims", required=True, type=Path,
                    help="Path to the claims CSV (e.g. data/claims/pilot_claims.csv).")
     p.add_argument("--claim-id", required=True, help="The claim_id to label.")
-    p.add_argument("--labeler", required=True, help="Your name, for the skeleton.")
-    p.add_argument("--query", default=None,
-                   help="Keyword (or regex, with --regex) to search the filings.")
-    p.add_argument("--regex", action="store_true",
-                   help="Treat --query as a regular expression.")
+    p.add_argument("--labeler", required=True, help="Your name (recorded on the label).")
+    p.add_argument("--gold", type=Path, default=None,
+                   help="Gold JSONL to append to (default: data/gold/pilot_<ticker>.jsonl).")
     p.add_argument("--forms", default=None,
                    help="Comma-separated forms to consider (default: 10-K,10-Q,8-K).")
-    p.add_argument("--context", type=int, default=240,
-                   help="Characters of context around each match (default 240).")
     p.add_argument("--from", dest="from_date", default=None,
                    help="Only filings on/after this date (YYYY-MM-DD).")
     p.add_argument("--until", dest="until_date", default=None,
-                   help="Only filings on/before this date (YYYY-MM-DD).")
+                   help="Only filings on/before this date (overrides the auto window).")
+    p.add_argument("--context", type=int, default=240,
+                   help="Characters of context around each match (default 240).")
     return p
 
 
@@ -265,43 +440,36 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
     claim = load_claim(args.claims, args.claim_id)
+    gold_path = (args.gold if args.gold
+                 else GOLD_DIR / f"pilot_{claim.ticker.lower()}.jsonl")
+
+    if claim.claim_id in load_gold_claim_ids(gold_path):
+        answer = input(
+            f"{claim.claim_id} is already labeled in {gold_path}. "
+            f"Add another label? [y/N] "
+        ).strip().lower()
+        if answer != "y":
+            print("Skipped.")
+            return 0
+
     forms = (tuple(f.strip() for f in args.forms.split(",")) if args.forms
              else _FORMS)
     from_date = date.fromisoformat(args.from_date) if args.from_date else None
-    until_date = date.fromisoformat(args.until_date) if args.until_date else None
-
-    print(_render_claim(claim))
+    until_date = (date.fromisoformat(args.until_date) if args.until_date
+                  else grading_window(claim))
 
     index_df = _load_filing_index(claim.ticker)
-    candidates = candidate_filings(
+    filings = candidate_filings(
         claim, index_df, forms=forms, from_date=from_date, until_date=until_date
     )
-    print(_render_filing_list(candidates))
+    if filings.empty:
+        print("No candidate filings in the grading window. "
+              "Widen it with --until YYYY-MM-DD.", file=sys.stderr)
+        return 1
 
-    if not args.query:
-        print(_render_query_hint(claim))
-    else:
-        sec_dir = PULLED_DATA_ROOT / claim.ticker / "SEC"
-        hits = 0
-        for filing_row in candidates.itertuples(index=False):
-            fpath = _resolve_filing_path(sec_dir, filing_row.localPath)
-            if not fpath.exists():
-                print(f"\n  [skip] filing HTML not on disk: {fpath}", file=sys.stderr)
-                continue
-            text = _html_to_text(fpath.read_bytes())
-            for match in search_filing(
-                text, args.query, regex=args.regex, context=args.context
-            ):
-                hits += 1
-                print(_render_evidence(filing_row, match))
-        if hits == 0:
-            print(f'\nNo matches for {args.query!r}. Try another term '
-                  f'(see suggestions with no --query).')
-
-    print("\n--- GoldLabel skeleton: fill verdict/confidence, paste evidence "
-          "fragments into expected_evidence, append to data/gold/pilot_"
-          f"{claim.ticker.lower()}.jsonl ---")
-    print(_render_skeleton(claim, args.labeler))
+    sec_dir = PULLED_DATA_ROOT / claim.ticker / "SEC"
+    run_session(claim, filings, sec_dir, gold_path, args.labeler, until_date,
+                context=args.context)
     return 0
 
 
