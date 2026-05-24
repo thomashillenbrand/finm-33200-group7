@@ -31,11 +31,12 @@ finm-33200-group7/
 │   │   ├── extract.py         # build_extractor, extract_call, filter_unquantified_guidance, dedupe_claims
 │   │   ├── output.py          # writes the claims CSV
 │   │   └── run.py             # CLI: python -m extractor.run --input ... --output ...
-│   └── verifier/              # workstream C — verification agent (iteration 1: stubbed tools)
+│   └── verifier/              # workstream C — verification agent (real EDGAR retrieval + FAISS)
 │       ├── __init__.py        # re-exports the public API
 │       ├── schema.py          # Pydantic models: Claim, EvidenceItem, EvidenceBundle, Verdict
-│       ├── corpus.py          # iteration-1 stub: loads canned excerpts from data/stub/
-│       ├── tools.py           # search_filings tool (stubbed; real EDGAR in iteration 2)
+│       ├── index.py           # offline indexer: chunk + embed SEC HTML → chunks.parquet (+ report_date) + faiss.index
+│       ├── corpus.py          # SearchIndex: FAISS query, call-date floor + reportDate horizon ceiling
+│       ├── tools.py           # per-claim search_filings tool (ticker/after_date/horizon_end closed over)
 │       ├── trace.py           # JSON+Markdown trace writer (adapted from agentic-rag-edgar-demo)
 │       ├── agent.py           # build_agent, verify, verify_from_dict
 │       └── run.py             # CLI: python -m verifier.run --claim ... --mode {evidence,verdict}
@@ -189,6 +190,19 @@ firms' actual SEC filings via a local FAISS index, with the load-bearing
 labeling guarantee preserved: in `--mode evidence` the agent returns cited
 excerpts without proposing a verdict.
 
+> **iter-3 update (2026-05-24) — claim-horizon time window.** The agent's
+> filing search is now bounded at *both* ends, enforced at the tool layer (the
+> LLM has no date argument to set): floored at the call date (never a filing
+> from before the claim) and ceilinged at the claim's resolved horizon. The
+> ceiling is keyed on each filing's **reporting period** (`reportDate`), not its
+> filing date — so a late-filed annual 10-K (filed in February but covering the
+> prior Dec 31) is still graded against an annual claim. This replaces the old
+> LLM-visible `before_date` argument and adds a `report_date` column to
+> `chunks.parquet`; **indexes built before this change must be rebuilt** (see
+> below). A claim with no resolved horizon (`horizon_end_date` null) has no
+> ceiling and will reach recent filings — pending the extractor's bare-quarter
+> horizon resolution.
+
 ### Prerequisites
 
 Pull SEC filings + Compustat for the four firms (one-time, ~10–30 min total):
@@ -213,6 +227,13 @@ mamba run -n truth python -m verifier.index TSLA --refresh # full rebuild
 Output: `pulled_data/<TICKER>/index/chunks.parquet` and `faiss.index`.
 Idempotent — re-running on an unchanged corpus is a no-op (only new accession
 numbers get re-embedded).
+
+`chunks.parquet` carries a `report_date` column (the filing's reporting period,
+used for the horizon ceiling). Re-running the indexer **backfills it onto an
+existing index for free** — no re-embedding, since chunk IDs are
+date-independent. If `SearchIndex.load` raises `IndexCorruptError` about a
+missing `report_date` column, your index predates the horizon change; just
+re-run `python -m verifier.index --all`.
 
 ### Run the verifier
 
