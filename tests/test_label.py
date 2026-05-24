@@ -43,14 +43,14 @@ _CLAIM_ROW = {
 _CLAIM_ID = _CLAIM_ROW["claim_id"]
 
 _FILINGS = [
-    {"accessionNumber": "ACC-Q", "filingDate": "2024-04-30", "form": "10-Q",
-     "localPath": "q.htm"},
-    {"accessionNumber": "ACC-K", "filingDate": "2024-02-20", "form": "8-K",
-     "localPath": "k.htm"},
-    {"accessionNumber": "ACC-PRE", "filingDate": "2023-11-01", "form": "10-Q",
-     "localPath": "pre.htm"},
-    {"accessionNumber": "ACC-AMD", "filingDate": "2024-05-01", "form": "10-K/A",
-     "localPath": "amd.htm"},
+    {"accessionNumber": "ACC-Q", "filingDate": "2024-04-30", "reportDate": "2024-03-31",
+     "form": "10-Q", "localPath": "q.htm"},
+    {"accessionNumber": "ACC-K", "filingDate": "2024-02-20", "reportDate": "2024-02-20",
+     "form": "8-K", "localPath": "k.htm"},
+    {"accessionNumber": "ACC-PRE", "filingDate": "2023-11-01", "reportDate": "2023-09-30",
+     "form": "10-Q", "localPath": "pre.htm"},
+    {"accessionNumber": "ACC-AMD", "filingDate": "2024-05-01", "reportDate": "2024-03-31",
+     "form": "10-K/A", "localPath": "amd.htm"},
 ]
 
 # q.htm hits sweep terms 'repurchase' and 'dividend'; k.htm hits none of them
@@ -131,6 +131,32 @@ def test_candidate_filings_filters_pre_call_and_wrong_form(env):
     assert set(cands["accessionNumber"]) == {"ACC-Q", "ACC-K"}
 
 
+def test_candidate_filings_bounds_by_report_period_not_filing_date():
+    """A late-filed annual 10-K that *reports* the horizon year is kept; a
+    next-year quarterly filed inside the old reporting-lag tail is dropped."""
+    claim = label._row_to_claim(dict(_CLAIM_ROW))  # call 2024-01-15, horizon_end 2024-12-31
+    df = pd.DataFrame([
+        {"accessionNumber": "IN-Q", "filingDate": "2024-04-30",
+         "reportDate": "2024-03-31", "form": "10-Q", "localPath": "a"},
+        {"accessionNumber": "IN-FY10K", "filingDate": "2025-02-15",
+         "reportDate": "2024-12-31", "form": "10-K", "localPath": "b"},
+        {"accessionNumber": "OUT-NEXTQ", "filingDate": "2025-04-30",
+         "reportDate": "2025-03-31", "form": "10-Q", "localPath": "c"},
+    ])
+    for col in ("filingDate", "reportDate"):
+        df[col] = pd.to_datetime(df[col]).dt.date
+
+    bounded = set(label.candidate_filings(
+        claim, df, horizon_end=claim.horizon_end_date)["accessionNumber"])
+    assert bounded == {"IN-Q", "IN-FY10K"}, "report-period bound is wrong"
+    assert "OUT-NEXTQ" not in bounded  # reports Q1-2025, beyond the FY2024 horizon
+
+    # without the horizon bound, the old filing-date window wrongly keeps OUT-NEXTQ
+    old = set(label.candidate_filings(
+        claim, df, until_date=label.grading_window(claim))["accessionNumber"])
+    assert "OUT-NEXTQ" in old
+
+
 def test_sweep_finds_capital_allocation_terms(env):
     claim, cands = _filings(env)
     found = label.sweep(cands, env["sec"], terms=label._SWEEP_TERMS["capital_allocation"])
@@ -138,6 +164,61 @@ def test_sweep_finds_capital_allocation_terms(env):
     assert all(isinstance(c, label.Candidate) for c in found)
     assert {c.term for c in found} & {"repurchase", "dividend"}
     assert found[0].to_evidence().form in ("10-K", "10-Q", "8-K")
+
+
+def test_is_noise_drops_inline_xbrl():
+    assert label._is_noise("0000059478 us-gaap:RestrictedStockUnitsRSUMember 2019-12-31")
+    assert not label._is_noise("Repurchases of common stock $500 million")
+
+
+def test_relevance_prefers_phrases_and_dollar_adjacency():
+    # multi-word line item beats a bare keyword
+    assert (label._relevance("repurchases of common stock", "Repurchases of common stock")
+            > label._relevance("repurchase", "we may repurchase shares"))
+    # a dollar-adjacent hit beats the same term in prose
+    assert (label._relevance("dividend", "dividends paid $1,200")
+            > label._relevance("dividend", "we may pay a dividend someday"))
+
+
+def test_claim_focus_infers_subcategory_from_claim_text(env):
+    # the fixture claim is a buyback ("repurchase $5 million ... / $5M buyback")
+    claim = label.load_claim(env["claims_csv"], _CLAIM_ID)
+    focus = label._claim_focus(claim)
+    assert "repurchases of common stock" in focus
+    assert "dividends paid" not in focus
+
+
+def test_focus_lifts_on_type_term_above_longer_off_type_phrase():
+    # a dividend claim's "dividends paid" should beat the longer capex phrase
+    focus = label._SUBCATEGORY_TERMS["dividend"]
+    on_type = label._relevance("dividends paid", "Dividends paid 300", focus)
+    off_type = label._relevance(
+        "purchases of property and equipment",
+        "Purchases of property and equipment 1,200", focus)
+    assert on_type > off_type
+
+
+def test_sweep_drops_noise_and_ranks_phrases_first(tmp_path):
+    sec = tmp_path / "SEC"
+    sec.mkdir()
+    (sec / "cf.htm").write_text(
+        "<html><body><p>Repurchases of common stock (1,500) "
+        "Dividends paid $300 million</p></body></html>", encoding="utf-8")
+    (sec / "noise.htm").write_text(
+        "<html><body><p>0000059478 us-gaap:PaymentsForRepurchaseOfCommonStock "
+        "repurchase 2019-12-31</p></body></html>", encoding="utf-8")
+    df = pd.DataFrame([
+        {"accessionNumber": "ACC-CF", "filingDate": "2021-02-01", "form": "10-K",
+         "localPath": "cf.htm"},
+        {"accessionNumber": "ACC-NS", "filingDate": "2021-02-01", "form": "10-K",
+         "localPath": "noise.htm"},
+    ])
+    df["filingDate"] = pd.to_datetime(df["filingDate"]).dt.date
+    found = label.sweep(df, sec, terms=label._SWEEP_TERMS["capital_allocation"])
+    accs = {c.accession_no for c in found}
+    assert "ACC-NS" not in accs, "inline-XBRL noise snippet should be dropped"
+    assert "ACC-CF" in accs
+    assert found[0].term in ("repurchases of common stock", "dividends paid")
 
 
 def test_resolve_filing_path_normalizes_windows_separators():
