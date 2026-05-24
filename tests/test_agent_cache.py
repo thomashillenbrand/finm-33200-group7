@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from verifier.agent import _configure_cache, _LLM_CACHE_PATH
+from verifier.agent import _LLM_CACHE_PATH, _configure_cache
 
 
 def test_configure_cache_disables_when_false(monkeypatch):

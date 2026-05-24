@@ -19,9 +19,9 @@ import pandas as pd
 
 from schemas import EvidenceItem
 from verifier.index import (
-    IndexNotBuiltError,
-    IndexCorruptError,
     PULLED_DATA_ROOT,
+    IndexCorruptError,
+    IndexNotBuiltError,
     _make_embeddings_client,
 )
 

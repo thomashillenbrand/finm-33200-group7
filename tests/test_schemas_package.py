@@ -6,12 +6,11 @@ import pytest
 from pydantic import ValidationError
 
 import schemas
-from schemas import Claim, EvidenceItem, EvidenceBundle, Verdict
+from schemas import Claim, EvidenceBundle, EvidenceItem, Verdict
 from schemas.claim import Claim as ClaimDirect
-from schemas.evidence_item import EvidenceItem as EvidenceItemDirect
 from schemas.evidence_bundle import EvidenceBundle as EvidenceBundleDirect
+from schemas.evidence_item import EvidenceItem as EvidenceItemDirect
 from schemas.verdict import Verdict as VerdictDirect
-
 
 # --- Re-export integrity ---------------------------------------------------
 

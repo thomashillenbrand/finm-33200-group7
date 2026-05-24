@@ -36,6 +36,7 @@ from schemas import (
     make_claim_id,
 )
 
+
 def _resolve_extractor_model(explicit: str | None) -> str:
     """Resolve the extractor model: explicit arg > ``EXTRACTOR_MODEL`` env.
 

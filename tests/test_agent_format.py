@@ -6,9 +6,9 @@ import pytest
 
 from schemas import Claim
 from verifier.agent import (
+    SUPPORTED_CLAIM_TYPES,
     UnsupportedClaimTypeError,
     _format_claim_for_agent,
-    SUPPORTED_CLAIM_TYPES,
 )
 
 

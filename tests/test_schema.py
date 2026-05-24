@@ -10,8 +10,8 @@ from datetime import date
 import pytest
 from pydantic import ValidationError
 
-from verifier.schema import Claim, EvidenceItem, EvidenceBundle, Verdict
 from verifier.agent import _output_schema
+from verifier.schema import Claim, EvidenceBundle, EvidenceItem, Verdict
 
 
 def _claim_kwargs(**overrides):
