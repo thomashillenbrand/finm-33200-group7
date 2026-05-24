@@ -6,6 +6,8 @@ an injected ``ask`` callable fed a scripted list of responses.
 
 import csv
 import json
+import subprocess
+import sys
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -261,3 +263,24 @@ def test_label_module_imports_nothing_from_agent_or_index():
     for line in import_lines:
         for bad in forbidden:
             assert bad not in line, f"forbidden import in label.py: {line}"
+
+
+def test_importing_label_does_not_pull_in_agent_stack():
+    """The source-grep above only covers label.py's own lines; this catches a
+    *transitive* leak (e.g. an eager agent import in verifier/__init__.py)."""
+    code = (
+        "import sys; sys.path.insert(0, 'src'); import verifier.label; "
+        "heavy = [m for m in "
+        "('faiss','deepagents','verifier.agent','verifier.corpus','verifier.tools') "
+        "if m in sys.modules]; "
+        "assert not heavy, heavy; print('ok')"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True, text=True,
+        cwd=Path(__file__).resolve().parent.parent,
+    )
+    assert out.returncode == 0, (
+        f"importing verifier.label pulled in the agent stack: "
+        f"{out.stdout}{out.stderr}"
+    )
