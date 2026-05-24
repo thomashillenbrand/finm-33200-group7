@@ -8,6 +8,7 @@ Public surface:
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import os
 import re
@@ -345,9 +346,6 @@ def build_index(ticker: str, *, refresh: bool = False) -> None:
 
     _atomic_write(faiss_target, _write_faiss)
     print(f"[index] {ticker}: {len(out_df)} chunks total, {len(to_embed)} newly embedded")
-
-
-import argparse
 
 
 def _cli_main(argv: list[str] | None = None) -> int:

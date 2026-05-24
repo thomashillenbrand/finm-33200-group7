@@ -86,8 +86,8 @@ def built_index(tmp_path, mock_embeddings, monkeypatch):
         src_dir / "sec_filings_index.parquet",
         sec_dir / "MINI_sec_filings_index.parquet",
     )
-    import verifier.index as idx
     import verifier.corpus as corp
+    import verifier.index as idx
     from verifier.corpus import SearchIndex
     monkeypatch.setattr(idx, "PULLED_DATA_ROOT", tmp_path / "pulled_data")
     monkeypatch.setattr(corp, "PULLED_DATA_ROOT", tmp_path / "pulled_data")

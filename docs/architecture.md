@@ -80,7 +80,7 @@ finm-33200-group7/
 │   ├── schemas/                 shared Pydantic models (B/C/D contract)
 │   ├── extractor/               workstream B — transcripts → claims CSV
 │   └── verifier/                workstream C — indexer + agent + tracing
-├── tests/                       pytest (164 tests; 4 gated behind `-m live`)
+├── tests/                       pytest (167 tests; 4 gated behind `-m live`)
 ├── data/
 │   ├── claims/                  extractor output (CSV per run)
 │   ├── stub/                    canned claim JSONs for smoke runs
@@ -564,7 +564,7 @@ truthfulness profiles + final paper.
     `text-embedding-3-small`); copy it to `.env` to A/B per-stage model choices
     without code edits.
 - **Tests:**
-  - `mamba run -n truth pytest -v` — 160 offline tests, no API calls
+  - `mamba run -n truth pytest -v` — 163 offline tests, no API calls
   - `mamba run -n truth pytest -v -m live` — 4 live tests, require `OPENAI_API_KEY`
 
 ---
@@ -581,9 +581,13 @@ backlog in `docs/future_optimizations.md`.
 | Agent-free labeling helper | new `verifier/label.py` + `tests/test_label.py` (design in `docs/labeling-helper-design.md`) | Designed, unbuilt |
 | Pilot labeling sprint + first eval numbers | `data/gold/pilot_tsla.jsonl` → `python -m verifier.eval` | Not yet run |
 | Compustat-backed `numerical_guidance` verification | new `verifier/compustat_tool.py`; lift the `SUPPORTED_CLAIM_TYPES` gate in `agent.py` | Out of scope today |
-| Rate-limit / retry layer | wrap `verify()` (tenacity) on top of the existing `max_retries=3` | Backlog |
-| Cache fragility (schema-drift deser errors) | `verifier/agent.py:_configure_cache` (key versioning or alternate backend) | Backlog |
-| `datetime.utcnow()` deprecation | `verifier/agent.py` (`_format_claim_for_agent`) — one-liner | Backlog |
 | Chunker / embedding / retriever autoresearcher | new driver; sweeps `verifier/index.py:chunk_text` + `EMBEDDING_MODEL` configs against the gold set | Gated on the gold set |
+
+Resolved robustness items: `verify()` retries per-claim on
+`openai.RateLimitError` (tenacity, on top of the SDK's `max_retries=3`); the
+`before_date <= call_date` window bug is floored at the tool layer (§6d); the
+`datetime.utcnow()` deprecation is fixed. The SQLite chat-cache schema-drift
+crash is an accepted limitation — the workaround (`--no-cache` or delete
+`pulled_data/.cache/llm_cache.sqlite`) is documented in the README.
 
 See `docs/future_optimizations.md` for the full backlog with rationale.

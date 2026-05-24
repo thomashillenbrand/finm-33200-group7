@@ -1,135 +1,242 @@
 # Gold-Set Labeling Rubric
 
-> **STATUS: DRAFT — provisional, for review.** This is a *minimum-viable temporary*
-> rubric written so the team can start trial-labeling before the assigned owner
-> finalizes it. Every threshold below marked _(provisional)_ is a placeholder
-> the team should ratify or replace. It is not the final rubric. Tracks
-> `CLAUDE.md` open items #3 (partial-credit policy) and #4 (rubric finalization).
+**Who this is for:** Human labelers assigning verdicts to extracted claims in `data/gold/`.
 
-## Purpose
+**Critical rule:** Do NOT read the verification agent's output before labeling. Read the SEC filings
+directly and assign your verdict independently. The entire evaluation depends on this independence —
+if you use the agent's output to guide your labels, the scoring is circular and meaningless.
 
-This rubric tells every labeler how to turn the evidence they find into one
-consistent verdict. Without it, two labelers reading the same filings assign
-different verdicts, and `verifier.eval`'s verdict-accuracy score measures
-labeler noise instead of agent quality. The labeling helper (`verifier.label`)
-finds *where the evidence is*; this rubric decides *what verdict it supports*.
+---
 
-## Scope (pilot)
+## The Four Verdicts
 
-The pilot gold set covers **`capital_allocation` claims only** — forward-looking
-management statements about share buybacks, dividends, capital expenditure, or
-debt. These are graded against the company's subsequent SEC filings (10-K,
-10-Q, 8-K). `numerical_guidance` claims are graded against Compustat, not
-filings, and are out of scope for this pilot (the verifier also currently
-supports only `capital_allocation`).
+### `verified`
+The filing evidence **clearly confirms** the claim came true — the figure, action, or outcome is
+explicitly stated in a post-call 10-Q, 10-K, or 8-K within the claim's horizon window.
 
-## The four verdict buckets
+Use when:
+- The announced figure matches the actual figure **within ~10%** (accounting for rounding/revisions)
+- The announced action was taken (buyback completed, factory opened, dividend increased)
+- No material contradiction exists elsewhere in the filing
 
-A verdict compares what management *said they would do* against what the
-company's later filings *show it did*, within the claim's stated horizon.
+### `partially_verified`
+The filing evidence **partially supports** the claim but something meaningful is missing or off.
 
-- **`verified`** — the filings show the company did substantially what the
-  claim stated, within the horizon. For a claim with a stated figure, the
-  realized amount lands within the claimed range, or at **≥ 80%** _(provisional)_
-  of a single claimed figure. For a figure-less claim ("we will pay down
-  debt"), the filings clearly show the action happened in the claimed
-  direction.
+Use when:
+- A numeric claim is directionally right but the magnitude is materially off (>10% gap)
+- A buyback/capex was announced for $X but only $Y was executed (Y < ~90% of X) within the horizon
+- An action was taken but later than promised (horizon elapsed with partial completion)
+- Multiple parts of a compound claim — only some came true
 
-- **`partially_verified`** — the company moved in the claimed direction but
-  fell materially short on magnitude or timing. Use this when the realized
-  amount is between **40% and 80%** _(provisional)_ of the claimed figure, or
-  the action happened but outside the stated horizon, or a multi-part claim had
-  some parts hold and others not.
+### `contradicted`
+The filing evidence **explicitly contradicts** the claim.
 
-- **`contradicted`** — the filings show the opposite of the claim, or no
-  meaningful movement toward it: realized **< 40%** _(provisional)_ of the
-  claim, the wrong direction (claimed a buyback, filings show net share
-  issuance; claimed debt paydown, debt rose), or the relevant filing covers the
-  horizon and shows the action simply did not occur.
+Use when:
+- The filing reports a figure that is opposite in direction (claimed growth → actual decline)
+- An announced action was reversed (buyback paused/cancelled, dividend cut)
+- The company directly walked back the guidance in a subsequent filing
 
-- **`not_yet_resolvable`** — the claim *cannot be graded* from the available
-  filings. Use this **only** when the horizon has not elapsed, the filing that
-  would cover the horizon is not in the pulled data, or the claim is too vague
-  to define any checkable outcome. This is the only verdict that may have empty
-  `expected_evidence`.
+### `not_yet_resolvable`
+You **cannot find evidence** in the available filings, OR the horizon had not elapsed by the time of
+the last available filing.
 
-### `contradicted` vs `not_yet_resolvable` — the key distinction
+Use when:
+- The claim horizon is multi-year and no filing yet covers the endpoint
+- The filing exists but contains no relevant data point for this claim
+- You searched 10-Qs, 10-Ks, and 8-Ks within the window and genuinely found nothing
 
-Do not use `not_yet_resolvable` as a synonym for "I couldn't find evidence."
-If the filing that *should* cover the horizon exists, you searched it, and it
-shows the action did not happen — that is **`contradicted`**, not unresolvable.
-`not_yet_resolvable` means the evidence *cannot exist yet*; `contradicted`
-means the evidence *should exist and shows a miss*.
+`not_yet_resolvable` is the only verdict allowed with an empty `expected_evidence` list.
 
-## Partial-credit policy _(provisional — the load-bearing open question)_
+---
 
-The 80% / 40% bands above are deliberate placeholders. The real policy — how
-much shortfall turns `verified` into `partially_verified` into `contradicted`,
-and how to weigh a magnitude miss against a timing miss — is a team decision
-(`CLAUDE.md` #3). Until it is set, apply the 80/40 bands, and **whenever a
-claim is near a boundary, record your reasoning in `labeler_notes`** so the
-boundary cases can be reviewed when the policy is finalized.
+## Confidence Levels
 
-## Selecting `expected_evidence`
+Assign independently from the verdict — confidence reflects how sure YOU are of the label, not
+whether the company succeeded.
 
-`expected_evidence` is the list of filing excerpts that *substantiate your
-verdict* — what a second labeler would need to reach the same conclusion.
+| Level | When to use |
+|---|---|
+| `high` | Evidence is explicit, unambiguous, and directly addresses the claim |
+| `medium` | Evidence is relevant but requires some inference or the figure is indirect |
+| `low` | You found something suggestive but it could be explained another way |
 
-- Cite the **SEC filing** (by `accession_no`): the cash-flow-statement line for
-  a buyback ("repurchases of common stock"), dividends paid, capital
-  expenditures, or debt issued/repaid; an 8-K for an announced program.
-- Every decisive verdict (`verified` / `partially_verified` / `contradicted`)
-  **requires at least one** `GoldEvidence` entry — the loader rejects a
-  decisive verdict with empty evidence.
-- Keep each `quote` to the relevant passage, **≤ 500 characters**.
-- Cite only filings filed **after the call date** — evidence cannot predate
-  the claim.
+---
 
-## Confidence
+## Partial-Credit Policy by Claim Sub-type
 
-Set `confidence` on each label:
+### `numerical_guidance` (revenue, EPS, margins, etc.)
 
-- **`high`** — the evidence is explicit and unambiguous (a filing line item
-  states the figure directly).
-- **`medium`** — the evidence is indirect or needs some interpretation.
-- **`low`** — the evidence is sparse, the claim is borderline-vague, or you
-  are genuinely unsure. Pair a `low` confidence with a note explaining why.
+| Situation | Verdict |
+|---|---|
+| Actual within ±10% of stated figure | `verified` |
+| Actual is in the right direction but more than 10% off | `partially_verified` |
+| Actual is in the wrong direction (e.g., claimed growth → actual decline) | `contradicted` |
+| No Compustat / filing data covers the claimed period yet | `not_yet_resolvable` |
 
-## Independence rule (load-bearing — do not break)
+**Note on ranges:** If the claim gives a range (e.g., "$148B–$153B"), the actual must fall inside the
+range for `verified`. If it falls within 10% of the nearest bound, use `partially_verified`.
 
-Build each label **independently of what the verification agent surfaced.**
-Do not run `verifier.run` and copy its evidence into the gold set — the eval
-scores the agent's retrieval against this gold set, so seeding the gold set
-from the agent's own output makes the score circular and meaningless. Use the
-agent-free helper (`verifier.label`) or read the filings directly.
+---
 
-## Workflow
+### `capital_allocation` — Buybacks (`subcategory: buyback`)
 
-The labeling helper (`verifier.label`) is interactive — one command per claim.
+The key question is: **was the authorized amount actually repurchased within the stated horizon?**
 
-1. Run `python -m verifier.label --claims <claims.csv> --claim-id <id>
-   --labeler <you>`. It shows the claim, runs a keyword sweep over the filings
-   filed after the call (bounded to the claim's horizon, or ~2 years when the
-   horizon is unresolved), and lists candidate passages.
-2. At the prompt: type `more <term>` to search additional keywords, `all` to
-   show every sweep hit, then enter the numbers of the passages that are real
-   evidence (e.g. `1,3`). **Open and read the filings yourself** before
-   accepting a passage — the helper locates candidates, you judge them. A
-   capital-allocation magnitude usually lives in a cash-flow-statement table,
-   which flattens poorly as text, so open the filing HTML to confirm it.
-3. When prompted, choose the verdict against this rubric and a confidence, and
-   add `labeler_notes` — especially for boundary calls.
-4. The helper validates the `GoldLabel` and appends it to
-   `data/gold/pilot_<ticker>.jsonl`. It never overwrites; re-running on an
-   already-labeled claim asks first before adding a second label.
+| Situation | Verdict |
+|---|---|
+| ≥90% of announced amount repurchased within horizon | `verified` |
+| 50–89% repurchased within horizon | `partially_verified` |
+| <50% repurchased OR program cancelled/suspended | `contradicted` or `partially_verified` (use your judgment + notes) |
+| No subsequent 10-Q cash flow statement covers the horizon yet | `not_yet_resolvable` |
 
-## Open decisions for the rubric owner
+**Where to look:** Cash flow statement → "Repurchases of common stock" (or treasury stock line). Also
+check 8-Ks for buyback announcements and press releases filed as exhibits.
 
-1. Ratify or replace the 80% / 40% partial-credit bands.
-2. Define how a **timing** miss (right amount, wrong period) trades off against
-   a **magnitude** miss.
-3. Decide whether a multi-part claim is labeled once (whole-claim verdict) or
-   split — the current extractor already splits compound statements, so one
-   `claim_id` should be one atomic assertion, but confirm.
-4. Decide whether `low`-confidence labels are kept, down-weighted, or excluded
-   by `verifier.eval`.
+---
+
+### `capital_allocation` — Dividends (`subcategory: dividend`)
+
+| Situation | Verdict |
+|---|---|
+| Dividend paid at the stated amount and on schedule | `verified` |
+| Dividend paid but at a different amount or timing | `partially_verified` |
+| Dividend cut, suspended, or reversed | `contradicted` |
+| Horizon not yet elapsed in available filings | `not_yet_resolvable` |
+
+**Where to look:** 8-Ks declaring dividends; 10-Q cash flow statement → "Dividends paid."
+
+---
+
+### `capital_allocation` — CapEx Plans (`subcategory: capex_plan`)
+
+Capital expenditure claims are often directional or range-based. Apply:
+
+| Situation | Verdict |
+|---|---|
+| Stated factory / facility was built and began operations within horizon | `verified` |
+| Project started but not completed within horizon, or costs materially exceeded claim | `partially_verified` |
+| Project cancelled, delayed beyond horizon with no restart signal | `contradicted` |
+| No filing yet covers the horizon endpoint | `not_yet_resolvable` |
+
+**For dollar-figure capex claims:** Use the same ±10% rule as numerical_guidance.
+
+**Where to look:** 10-Q/10-K cash flow statement → "Capital expenditures"; MD&A section;
+8-Ks announcing plant openings or cancellations.
+
+---
+
+### `capital_allocation` — Debt (`subcategory: debt`)
+
+| Situation | Verdict |
+|---|---|
+| Stated paydown / issuance occurred within the horizon at the stated amount (±10%) | `verified` |
+| Debt action taken but amount or timing materially different | `partially_verified` |
+| Opposite action taken (claimed paydown → actually issued more; claimed issuance → didn't happen) | `contradicted` |
+| Filing period doesn't yet cover the horizon | `not_yet_resolvable` |
+
+**Where to look:** 10-Q/10-K balance sheet → long-term debt; cash flow statement → "Repayments of
+debt" / "Proceeds from issuance of debt"; 8-Ks for note offerings or credit facility changes.
+
+---
+
+## Worked Examples (TSLA)
+
+These use real claims from `data/claims/pilot_claims.csv`. Read them before labeling to calibrate.
+
+---
+
+### Example 1 — `verified`
+
+**Claim** (`TSLA_20200722_124bd5bf`, call date 2020-07-22):
+> "we're going to be building our next Gigafactory in Texas"
+
+**Horizon:** unspecified  
+**What to find:** An 8-K or 10-K confirming Giga Texas broke ground and eventually began production.  
+**Verdict:** `verified` — Giga Texas opened in April 2022, confirmed in the Q1 2022 10-Q and an 8-K
+press release. The factory was built. Confidence: `high`.
+
+---
+
+### Example 2 — `partially_verified`
+
+**Claim** (`TSLA_20201021_2636f8b9`, call date 2020-10-21):
+> "we have revised up our expectations for capital spending by $2 billion to $2.5 billion."
+
+**Horizon:** unspecified (implied near-term given it's a revised guidance for the current spending
+cycle)  
+**What to find:** Actual CapEx in subsequent 10-Qs/10-K for fiscal 2020 and 2021.  
+**Verdict:** `partially_verified` — Check the cash flow statement. If actual CapEx came in within
+the revised range → `verified`. If it came in higher or lower by >10% → `partially_verified`.
+This particular claim is a revision announcement, not a commitment — weight the
+direction of the revision, not just the magnitude. Confidence: `medium`.
+
+---
+
+### Example 3 — `verified` (delivery guidance)
+
+**Claim** (`TSLA_20201021_6ff23990`, call date 2020-10-21):
+> "we expect to achieve our original 2020 guidance of 500,000 deliveries despite the operational
+> interruptions earlier in the year."
+
+**Horizon:** FY2020  
+**What to find:** Tesla's full-year 2020 delivery announcement (filed as an 8-K in January 2021)
+or the 10-K delivery table.  
+**Verdict:** Tesla delivered 499,550 vehicles in 2020 — within 0.1% of 500,000.
+Label as `verified` (within ±10%). Confidence: `high`.
+
+---
+
+### Example 4 — `not_yet_resolvable`
+
+**Claim** (`TSLA_20200129_24163afe`, call date 2020-01-29):
+> "we also anticipate significant progress on factory construction of Shanghai- and Berlin-built
+> Model Y, which will result in continued increases in capital spending"
+
+**Horizon:** unspecified, no `horizon_end_date`  
+**Note:** No specific dollar figure is given, and "continued increases" is directional.
+This claim has no `horizon_end_date` and no precise magnitude to verify.  
+**Verdict:** `not_yet_resolvable` — Cannot assign a precise verdict without a target figure or
+end date. Note this in `labeler_notes`. Confidence: `low`.
+
+---
+
+## Common Mistakes to Avoid
+
+1. **Don't use the agent's retrieved evidence first.** Open the SEC filings yourself.
+
+2. **Don't require exact match for `verified`.** ±10% is real-world rounding; management can't
+   predict the future to the dollar.
+
+3. **Don't mark `not_yet_resolvable` just because it's hard to find.** Search the MD&A, the cash
+   flow statement, and 8-Ks before giving up. Only use it if you genuinely cannot find relevant
+   evidence after looking.
+
+4. **Don't mark `contradicted` just because the number is off.** If the direction was right but
+   the magnitude missed, that's `partially_verified`, not `contradicted`. Reserve `contradicted`
+   for directional reversals and explicit cancellations.
+
+5. **Claims with no `horizon_end_date` need judgment.** If no horizon is stated, use the next
+   2–4 filings after the call date as your search window. Note your window choice in
+   `labeler_notes`.
+
+6. **Write labeler notes.** Even one sentence — "Q2 2021 10-Q cash flow shows $487M repurchases
+   vs $500M announced, within 10%." This is what calibrates the rubric across labelers.
+
+---
+
+## Quick Reference Card
+
+```
+verified           → claim came true, evidence is clear, figure within ±10%
+partially_verified → partially right: direction correct but magnitude off, or partial completion
+contradicted       → filing explicitly shows the opposite happened
+not_yet_resolvable → genuinely can't find evidence or horizon hasn't elapsed
+
+confidence: high   → evidence is unambiguous and directly addresses the claim
+confidence: medium → evidence is relevant but requires inference
+confidence: low    → something suggestive but not definitive
+```
+
+**Evidence must come from:** 10-Q, 10-K, or 8-K filed **after** the call date and within the
+claim horizon. Never cite Compustat directly — it's a convenience cross-check only; the cited
+`accession_no` must be an SEC filing.

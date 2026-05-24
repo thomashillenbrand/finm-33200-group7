@@ -25,6 +25,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pip-tools>=7.4",
+    "isort>=8.0",
 ]
 
 [build-system]
@@ -43,3 +44,8 @@ addopts = "-m 'not live'"
 markers = [
     "live: tests that make live OpenAI API calls (cost money, ~10-30s). Run with `pytest -m live`.",
 ]
+
+[tool.isort]
+profile = "black"
+src_paths = ["src", "tests"]
+known_first_party = ["schemas", "extractor", "verifier", "data_pull"]

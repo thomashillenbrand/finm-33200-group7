@@ -2,7 +2,7 @@
 
 import pytest
 
-from verifier.index import chunk_text, Chunk
+from verifier.index import Chunk, chunk_text
 
 
 def _join_with_spaces(words: list[str]) -> str:
@@ -70,6 +70,7 @@ def test_chunker_is_subquadratic_on_realistic_filing_size():
 # --- HTML extraction -------------------------------------------------------
 
 from pathlib import Path
+
 from verifier.index import extract_text_from_html
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "mini_filings"
@@ -106,7 +107,7 @@ def test_extract_text_from_real_fixture():
 
 # --- chunk_id / exceptions -------------------------------------------------
 
-from verifier.index import chunk_id, IndexNotBuiltError, IndexCorruptError
+from verifier.index import IndexCorruptError, IndexNotBuiltError, chunk_id
 
 
 def test_chunk_id_is_deterministic():

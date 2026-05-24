@@ -14,18 +14,48 @@ Two LLM calls per verification — acceptable cost for iteration 1.
 
 from __future__ import annotations
 
+import logging
 import os
+from datetime import date as _date_cls
+from datetime import datetime as _dt_cls
+from datetime import timezone as _timezone
 from pathlib import Path
 from typing import Literal
 
+import openai
 from deepagents import create_deep_agent
 from langchain.chat_models import init_chat_model
 from langchain_community.cache import SQLiteCache
 from langchain_core.globals import set_llm_cache
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_random_exponential,
+)
 
 from schemas import Claim, EvidenceBundle, Verdict
 from verifier.tools import bind_search_filings
-from verifier.trace import to_records, save_trace, print_trace
+from verifier.trace import print_trace, save_trace, to_records
+
+_logger = logging.getLogger(__name__)
+
+# Per-claim retry on OpenAI rate limits. The OpenAI SDK already retries each
+# individual request (max_retries=3 on the init_chat_model calls below); this
+# coarser layer re-runs the whole verification when the SDK still surfaces a
+# RateLimitError. At gold-set scale (dozens of claims back-to-back) the TPM cap
+# gets hit routinely. The SQLite cache makes a re-run cheap — completions that
+# already succeeded are served from cache. reraise=True so callers see the real
+# RateLimitError (not tenacity's RetryError) once attempts are exhausted;
+# before_sleep logs each backoff so retries are visible, not swallowed.
+_retry_on_rate_limit = retry(
+    retry=retry_if_exception_type(openai.RateLimitError),
+    wait=wait_random_exponential(min=2, max=60),
+    stop=stop_after_attempt(6),
+    before_sleep=before_sleep_log(_logger, logging.WARNING),
+    reraise=True,
+)
 
 _LLM_CACHE_PATH = Path("pulled_data") / ".cache" / "llm_cache.sqlite"
 
@@ -182,6 +212,7 @@ def _stringify_content(content: object) -> str:
     return str(content)
 
 
+@_retry_on_rate_limit
 def verify(
     claim: Claim,
     mode: Mode = "evidence",
@@ -191,16 +222,22 @@ def verify(
 ) -> EvidenceBundle | Verdict:
     """Run the verification agent on a single claim. Returns mode-dependent output.
 
+    Retries the whole verification on `openai.RateLimitError` (exponential
+    backoff with jitter, up to 6 attempts), then re-raises the original error.
+
     Args:
-        claim: Validated `Claim` (iter-2 combined shape).
+        claim: Validated `Claim` (combined shape).
         mode: "evidence" (default; safe for labeling workflow) or "verdict".
         trace: If True, save JSON+MD trace files to data/traces/ and print.
+            Note: a rate-limit retry re-runs the agent and writes a fresh
+            (timestamped) trace per attempt.
         cache: If True (default), enable the SQLite chat-completion cache.
             Pass False (or `--no-cache` from the CLI) for fresh LLM calls.
 
     Raises:
         UnsupportedClaimTypeError: if claim.claim_type is not a capital-
-            allocation type (iter-2 scope).
+            allocation type (current scope).
+        openai.RateLimitError: if rate limits persist past the retry budget.
     """
     user_message = _format_claim_for_agent(claim)  # raises on unsupported types
     _configure_cache(cache)
@@ -233,9 +270,6 @@ def verify_from_dict(
     return verify(Claim(**d), mode, trace=trace, cache=cache)
 
 
-from datetime import date as _date_cls
-from datetime import datetime as _dt_cls
-
 SUPPORTED_CLAIM_TYPES = {"capital_allocation"}
 
 
@@ -258,7 +292,7 @@ def _format_claim_for_agent(claim: Claim, *, today: _date_cls | None = None) -> 
             f"got claim_type={claim.claim_type!r}. "
             f"Compustat-backed numerical_guidance lands in iter 3."
         )
-    today = today or _dt_cls.utcnow().date()
+    today = today or _dt_cls.now(_timezone.utc).date()
     horizon_hint = ""
     if claim.horizon_end_date is not None and claim.horizon_end_date < today:
         horizon_hint = (
