@@ -35,11 +35,11 @@ an explicit future-work item (replace with human labels).
   capital-allocation only — **137** such claims in the 55 run
   (AMZN 76 / TSLA 28 / KO 22 / LLY 11).
 - **Gold set = a frozen stratified subset** of the *residual* (cap-alloc claims
-  with no figure in the quote — see the cascade section), not the whole 137; a
-  validation set is a sample. Target ~32, capped per ticker so AMZN does not
-  dominate; final size fixed at selection time. **Once selected, the claim set
-  is frozen** for the entire eval + improvement loop, or recall@k / verdict
-  numbers are not comparable across iterations.
+  the autochecker did not verdict — see the cascade section), not the whole 137;
+  a validation set is a sample. Capped per ticker so AMZN does not dominate;
+  current frozen subset = **28** (AMZN 8 / LLY 8 / TSLA 8 / KO 4, seed 0). **Once
+  selected, the claim set is frozen** for the entire eval + improvement loop, or
+  recall@k / verdict numbers are not comparable across iterations.
 - **No re-labeling after seeing agent output** — that reintroduces circularity.
 
 ## Production workflow (cascade) and what it means for the gold set
@@ -56,14 +56,26 @@ claims represent the verifier's job: in production the verifier only ever sees
 the autograder's **residual**, so the gold subset is sampled from that residual
 to make the numbers representative.
 
-**Identifying the residual — figure heuristic, no LLM (chosen).** Approximate the
-non-Compustat-verifiable cap-alloc claims as those whose `verbatim_quote` carries
-no figure (no `$` / `%` / "billion" / "million" / digit). The quantified
-buyback/dividend/debt claims (which Compustat settles upstream) are thereby
-excluded; what remains is the qualitative capex/investment residual — the same
-capex-skew flagged below, now with a principled reason: that skew *is* the
-verifier's production distribution. A precise residual (the autochecker's
-screen stage) is a deliberate later refinement if the wiring warrants it.
+**Identifying the residual — the real autochecker screen (chosen, 2026-05-25).**
+The residual is the `capital_allocation` claims the autochecker did **not**
+verdict, read directly from its output
+(`data/autochecker/55_full_run_verdict_autochecker-v1.jsonl`) via
+`autochecker_checked_ids` and excluded in `select_residual_subset(exclude_ids=…)`.
+This is the authoritative partition: it samples exactly the claims that fall
+through the cascade to this verifier, with zero overlap with the autochecker by
+construction.
+
+> Earlier this used a no-figure heuristic (a quote with no `$`/`%`/figure ≈
+> not-Compustat-verifiable) because no 55-keyed autochecker output existed yet.
+> Once the autochecker merged, a cross-check showed the heuristic was only a ~70%
+> proxy (9 of 30 sampled claims were actually Compustat-checked — e.g. "increase
+> CapEx year-over-year"), so we swapped to the real screen. The heuristic remains
+> the fallback in `select_residual_subset` when no `--exclude-checked` file is
+> given.
+
+Either way the residual is capex-skewed (the quantified buyback/dividend/debt
+claims are settled upstream) — that skew *is* the verifier's production
+distribution.
 
 Two carve-outs of awareness, both out of scope here: (a) the residual also
 includes non-Compustat **numerical_guidance** claims the verifier cannot yet
@@ -116,7 +128,7 @@ note) — the design must keep it that way.
 ## Data flow
 
 ```
-55_full_run.csv ──cap_alloc & no-figure (residual), stratified-sample, freeze──▶ gold claim subset (~32)
+55_full_run.csv ──cap_alloc & not autochecker-verdicted (residual), stratified-sample, freeze──▶ gold claim subset (28)
         │
         ▼  verifier.autolabel  (GPT-5.5 + rubric, deterministic sweep evidence)
 data/gold/auto_{amzn,tsla,ko,lly}.jsonl
@@ -142,9 +154,9 @@ summary (mean recall@k, precision, verdict_accuracy) + data/eval/per_claim_resul
    (`python -m verifier.index --all`; required after the horizon-ceiling change);
    set `.env`: `GOLD_LABELER_MODEL=openai:gpt-5.5`,
    `VERIFIER_AGENT_MODEL=openai:gpt-5.1` (+ existing parser/embedding vars).
-2. **Select + freeze** the gold subset: apply the no-figure residual filter to
-   the 137 cap-alloc claims, stratified-sample ~32, and write the claim-id list
-   to a pinned file under `data/gold/`.
+2. **Select + freeze** the gold subset (done): `verifier.autolabel select
+   --exclude-checked <55 autochecker jsonl>` writes the 28 residual claim_ids to
+   `data/gold/auto/subset_ids.txt`.
 3. **Build** `verifier.autolabel` + offline tests (LLM mocked).
 4. **Smoke** end-to-end on one ticker: auto-label → eval → eyeball
    `per_claim_results.csv`.

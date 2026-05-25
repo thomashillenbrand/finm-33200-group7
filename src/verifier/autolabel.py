@@ -16,6 +16,7 @@ See docs/autolabel-gold-eval-design.md.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import random
 import sys
@@ -66,24 +67,58 @@ def claim_has_figure(quote: str) -> bool:
     return _has_number(quote)
 
 
-def select_residual_subset(
-    df: pd.DataFrame, *, per_ticker_cap: int = 8, seed: int = 0
-) -> list[str]:
-    """Frozen stratified subset of the verifier's production residual.
+def autochecker_checked_ids(jsonl_path: str | Path) -> set[str]:
+    """The claim_ids the Compustat autochecker actually verdicted (not skipped).
 
-    The residual = ``capital_allocation`` claims whose quote carries no figure
-    (the quantified ones are settled upstream by the Compustat autochecker).
-    Stratified by ticker, capped per ticker, deterministic for a given seed.
+    These are settled upstream by the autochecker, so they are excluded from the
+    verifier's residual. A row counts as checked when it has no ``skipped_reason``
+    (empty or absent). Blank lines are tolerated.
     """
-    ca = df[df["claim_type"] == "capital_allocation"]
-    residual = ca[~ca["verbatim_quote"].map(claim_has_figure)]
+    ids: set[str] = set()
+    for line in Path(jsonl_path).read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        if not (row.get("skipped_reason") or ""):
+            ids.add(row["claim_id"])
+    return ids
+
+
+def _stratified_sample(df: pd.DataFrame, *, per_ticker_cap: int, seed: int) -> list[str]:
+    """Per-ticker capped sample of claim_ids, deterministic for a given seed
+    (sort-before-shuffle so the starting order is canonical across runs)."""
     rng = random.Random(seed)
     picked: list[str] = []
-    for _, grp in residual.groupby("ticker"):
+    for _, grp in df.groupby("ticker"):
         ids = sorted(grp["claim_id"].tolist())
         rng.shuffle(ids)
         picked.extend(ids[:per_ticker_cap])
     return sorted(picked)
+
+
+def select_residual_subset(
+    df: pd.DataFrame,
+    *,
+    per_ticker_cap: int = 8,
+    seed: int = 0,
+    exclude_ids: frozenset[str] | set[str] = frozenset(),
+) -> list[str]:
+    """Frozen stratified subset of the verifier's production residual.
+
+    The residual is the ``capital_allocation`` claims the autochecker does not
+    settle upstream. When ``exclude_ids`` (the autochecker's checked claim_ids,
+    from :func:`autochecker_checked_ids`) is given, that screen is authoritative
+    and defines the residual directly. Otherwise it falls back to the no-figure
+    heuristic (a quote with no stated figure ≈ not Compustat-verifiable).
+    Stratified by ticker, capped per ticker, deterministic for a given seed.
+    """
+    ca = df[df["claim_type"] == "capital_allocation"]
+    if exclude_ids:
+        residual = ca[~ca["claim_id"].isin(exclude_ids)]
+    else:
+        residual = ca[~ca["verbatim_quote"].map(claim_has_figure)]
+    return _stratified_sample(residual, per_ticker_cap=per_ticker_cap, seed=seed)
 
 
 def _decision_to_evidence(candidates, indices):
@@ -222,10 +257,16 @@ def _label_one(claim, decider, rubric_text, *, labeler, max_candidates):
 
 def _cli_select(args) -> int:
     df = pd.read_csv(args.claims).fillna("")
-    ids = select_residual_subset(df, per_ticker_cap=args.per_ticker, seed=args.seed)
+    exclude = (autochecker_checked_ids(args.exclude_checked)
+               if args.exclude_checked else frozenset())
+    ids = select_residual_subset(
+        df, per_ticker_cap=args.per_ticker, seed=args.seed, exclude_ids=exclude,
+    )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text("\n".join(ids) + "\n", encoding="utf-8")
-    print(f"Wrote {len(ids)} claim_ids -> {args.out}")
+    basis = (f"autochecker residual ({len(exclude)} checked ids excluded)"
+             if exclude else "no-figure heuristic")
+    print(f"Wrote {len(ids)} claim_ids -> {args.out}  [{basis}]")
     return 0
 
 
@@ -265,6 +306,10 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--out", required=True, type=Path)
     s.add_argument("--per-ticker", type=int, default=8)
     s.add_argument("--seed", type=int, default=0)
+    s.add_argument("--exclude-checked", type=Path, default=None,
+                   help="Autochecker output JSONL; its verdicted claim_ids are "
+                   "excluded so the residual is defined by the real Compustat "
+                   "screen instead of the no-figure heuristic.")
     s.set_defaults(func=_cli_select)
 
     label_p = sub.add_parser("label", help="Auto-label the pinned subset with GPT-5.5.")

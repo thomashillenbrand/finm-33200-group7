@@ -3,7 +3,7 @@ fake ``decider`` with an ``.invoke(messages)`` method (mirrors verifier.label's
 injected IO), so no network call happens."""
 from __future__ import annotations
 
-import importlib
+import subprocess
 import sys
 from datetime import date
 from pathlib import Path
@@ -129,14 +129,23 @@ def test_load_rubric_reads_the_file(tmp_path):
 
 
 def test_autolabel_import_graph_excludes_agent_and_faiss():
-    """Importing autolabel must not pull in the agent stack / FAISS / tools /
-    embeddings — same independence guarantee as verifier.label."""
-    for mod in [m for m in list(sys.modules) if "verifier.agent" in m or m == "faiss"]:
-        del sys.modules[mod]
-    importlib.import_module("verifier.autolabel")
-    forbidden = ("faiss", "verifier.agent", "verifier.tools")
-    leaked = [m for m in sys.modules if any(m == f or m.startswith(f + ".") for f in forbidden)]
-    assert leaked == [], f"autolabel must not import {forbidden}; leaked: {leaked}"
+    """Importing autolabel must not pull in the agent stack / FAISS / tools.
+
+    Run in a fresh interpreter (subprocess) so the check is immune to test
+    ordering: other tests in the suite legitimately import faiss / verifier.tools,
+    and an in-process check can't distinguish those from a real autolabel leak.
+    """
+    script = (
+        "import sys, verifier.autolabel\n"
+        "bad = [m for m in sys.modules if m == 'faiss' or m.startswith('faiss.') "
+        "or m == 'verifier.agent' or m.startswith('verifier.agent.') "
+        "or m == 'verifier.tools' or m.startswith('verifier.tools.')]\n"
+        "print(';'.join(sorted(bad)))\n"
+    )
+    out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    leaked = [m for m in out.stdout.strip().split(";") if m]
+    assert leaked == [], f"autolabel must not import faiss/agent/tools; leaked: {leaked}"
 
 
 def test_agent_module_does_not_load_the_rubric():
@@ -184,3 +193,28 @@ def test_system_prompt_instructs_evidenced_non_occurrence_is_contradiction():
     system = msgs[0]["content"].lower()
     assert "non-occurrence" in system
     assert "contradicted" in system and "not_yet_resolvable" in system
+
+
+def test_autochecker_checked_ids_returns_only_verdicted(tmp_path):
+    p = tmp_path / "ac.jsonl"
+    p.write_text(
+        '{"claim_id": "C1", "skipped_reason": ""}\n'      # verdicted -> checked
+        '{"claim_id": "C2", "skipped_reason": "screen_false"}\n'  # skipped
+        '{"claim_id": "C3"}\n'                            # no key -> checked
+        '\n',                                             # blank line tolerated
+        encoding="utf-8",
+    )
+    assert autolabel.autochecker_checked_ids(p) == {"C1", "C3"}
+
+
+def test_select_residual_subset_excludes_autochecker_checked_ids():
+    df = pd.DataFrame([
+        # no figure, but the autochecker screened it IN -> must be excluded
+        _claim_row("A_chk", "AMZN", "capital_allocation", "increase capex year over year"),
+        _claim_row("A_keep", "AMZN", "capital_allocation", "add fulfillment capacity"),
+        _claim_row("T_keep", "TSLA", "capital_allocation", "build the Berlin factory"),
+    ])
+    ids = autolabel.select_residual_subset(
+        df, exclude_ids={"A_chk"}, per_ticker_cap=8, seed=0
+    )
+    assert ids == ["A_keep", "T_keep"]   # screen decides, not the figure heuristic
