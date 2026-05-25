@@ -160,7 +160,12 @@ def _cli() -> int:
     p.add_argument("--no-cache", action="store_true",
                    help="Bypass the SQLite chat cache for fresh LLM calls.")
     p.add_argument("--output", type=Path, default=Path("data/eval/per_claim_results.csv"),
-                   help="Where to write the per-claim CSV.")
+                   help="Where to write the 'latest' per-claim CSV (convenience pointer).")
+    p.add_argument("--run-label", default=None,
+                   help="Label for this run's saved record (default: a timestamp). "
+                        "Each run is saved individually under --runs-dir, never overwritten.")
+    p.add_argument("--runs-dir", type=Path, default=Path("data/eval/runs"),
+                   help="Directory of individually-saved run records.")
     args = p.parse_args()
 
     load_dotenv()
@@ -220,6 +225,26 @@ def _cli() -> int:
         for r in results:
             w.writerow([r.claim_id, r.recall_at_k, r.precision, r.verdict_match])
     print(f"wrote {args.output}")
+
+    # Individually-saved run record (never overwritten) so runs are comparable
+    # and a regression can be reverted via the recorded git_head.
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    label = args.run_label or "run"
+    meta = {
+        "timestamp": timestamp,
+        "label": label,
+        "git_head": _git_head_sha(),
+        "agent_model": os.environ.get("VERIFIER_AGENT_MODEL", ""),
+        "parser_model": os.environ.get("VERIFIER_PARSER_MODEL", ""),
+        "gold": str(args.gold),
+        "claims": str(args.claims),
+        "mode": args.mode,
+        "k": args.k,
+        "cache": not args.no_cache,
+    }
+    run_dir = write_run_record(args.runs_dir, label, results=results,
+                               summary=summary, meta=meta)
+    print(f"wrote run record -> {run_dir}")
     return 0
 
 

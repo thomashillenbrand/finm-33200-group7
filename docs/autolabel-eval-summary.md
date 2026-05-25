@@ -83,3 +83,45 @@ Gold verdict mix: **12 verified, 1 partial, 15 not_yet_resolvable, 0 contradicte
 - **Open follow-up:** the gpt-5.1 structured-output parser intermittently returns an empty/unparseable response (1 claim skipped this run) — worth a retry/repair path.
 
 Artifacts: gold set in `data/gold/auto/`, per-claim scores in `data/eval/per_claim_results.csv`.
+
+---
+
+## Iteration 1 — verdict-agent discipline pass (2026-05-25)
+
+First agent-improvement pass, evaluated against the same frozen 28-claim gold set
+(run records: `data/eval/runs/2026-05-25_baseline_*` vs `…_discipline-pass`).
+
+| Metric | Baseline | Discipline pass |
+|---|---|---|
+| claims scored | 27 (1 skipped) | **28 (0 skipped)** |
+| recall@8 | 0.75 | **0.82** |
+| precision@8 | 0.33 | **0.43** |
+| verdict accuracy | 0.56 | **0.71** |
+| forward controls correctly abstained | 3/6 | **5/6** |
+
+**What changed:** (1) a deterministic *coverage signal* (latest available filing
+period) is injected into the claim message as context — never a verdict cap; (2)
+the verdict prompt was rewritten for evidence-grounding (grade only on filings
+that exist; don't infer from unpublished ones; early fulfillment still counts as
+verified); (3) an *evidence net* downgrades any decisive verdict lacking citations
+to `not_yet_resolvable`; (4) parser retry/repair degrades a bad structured-output
+parse to `not_yet_resolvable` instead of losing the claim (this recovered the
+previously-skipped claim).
+
+**Forward-claim over-reach largely fixed** — the headline failure. The one
+remaining forward control that didn't "match" (`TSLA_20250723_bedcd74c`,
+"launching our third Megafactory near Houston in 2026") was traced: the agent
+returned `not_yet_resolvable`, correctly distinguishing *construction underway*
+(found in 2026 filings) from the claimed *launch*, and noting coverage stops
+before the horizon. The eval mismatch was LLM nondeterminism between
+`not_yet_resolvable` and a defensible `partially_verified` — not confabulation.
+
+**Caveats unchanged:** small n; LLM-labeled gold; `verified`-skewed (no
+`contradicted` to test). Verdict-accuracy gains are partly the forward-control
+fix + the recovered claim; recall/precision shifts come from the new prompt
+steering the agent's search queries (retrieval itself is unchanged).
+
+**Open follow-ups:** (a) the parser still emits placeholder citation dates
+(coerced to `None` — accessions are correct, scoring unaffected); (b) trace
+review to assess `search_filings` effectiveness / possible new tools; (c) chunker
+autoresearch — both deferred to later efforts.
