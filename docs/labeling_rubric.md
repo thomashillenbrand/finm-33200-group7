@@ -29,12 +29,18 @@ Use when:
 - Multiple parts of a compound claim — only some came true
 
 ### `contradicted`
-The filing evidence **explicitly contradicts** the claim.
+The filing evidence **explicitly contradicts** the claim — including **evidenced
+non-occurrence**: a place where the promised outcome *would necessarily* be reported shows it did not happen.
 
 Use when:
 - The filing reports a figure that is opposite in direction (claimed growth → actual decline)
 - An announced action was reversed (buyback paused/cancelled, dividend cut)
 - The company directly walked back the guidance in a subsequent filing
+- **The horizon has elapsed and the obligatory disclosure line shows the action did not occur** — e.g. a
+  promised buyback but the cash-flow "Repurchases of common stock" line is zero/absent for the full
+  horizon, or promised debt issuance/paydown that never appears. Cite that line as your evidence.
+  (Absence in an *obligatory* disclosure point is evidence of non-occurrence — distinct from merely
+  failing to find a mention, which is `not_yet_resolvable`.)
 
 ### `not_yet_resolvable`
 You **cannot find evidence** in the available filings, OR the horizon had not elapsed by the time of
@@ -44,6 +50,12 @@ Use when:
 - The claim horizon is multi-year and no filing yet covers the endpoint
 - The filing exists but contains no relevant data point for this claim
 - You searched 10-Qs, 10-Ks, and 8-Ks within the window and genuinely found nothing
+
+Do **not** use it when the horizon has elapsed **and** an obligatory disclosure line (cash-flow /
+balance-sheet) shows the promised action did not occur — that is evidenced non-occurrence, i.e.
+`contradicted`. `not_yet_resolvable` is for "too early to tell" or "no obligatory disclosure point
+where silence would be meaningful," not for excusing a promise that an elapsed-horizon statement shows
+never happened.
 
 `not_yet_resolvable` is the only verdict allowed with an empty `expected_evidence` list.
 
@@ -209,7 +221,8 @@ end date. Note this in `labeler_notes`. Confidence: `low`.
 
 3. **Don't mark `not_yet_resolvable` just because it's hard to find.** Search the MD&A, the cash
    flow statement, and 8-Ks before giving up. Only use it if you genuinely cannot find relevant
-   evidence after looking.
+   evidence after looking — and **not** to excuse a promise that an elapsed-horizon obligatory line
+   (e.g. a zero buyback in the cash-flow statement) shows never happened: that is `contradicted`.
 
 4. **Don't mark `contradicted` just because the number is off.** If the direction was right but
    the magnitude missed, that's `partially_verified`, not `contradicted`. Reserve `contradicted`
@@ -229,8 +242,8 @@ end date. Note this in `labeler_notes`. Confidence: `low`.
 ```
 verified           → claim came true, evidence is clear, figure within ±10%
 partially_verified → partially right: direction correct but magnitude off, or partial completion
-contradicted       → filing explicitly shows the opposite happened
-not_yet_resolvable → genuinely can't find evidence or horizon hasn't elapsed
+contradicted       → filing shows the opposite, OR an elapsed-horizon obligatory line shows it didn't happen
+not_yet_resolvable → horizon hasn't elapsed, or no obligatory disclosure point (≠ excusing a broken promise)
 
 confidence: high   → evidence is unambiguous and directly addresses the claim
 confidence: medium → evidence is relevant but requires inference

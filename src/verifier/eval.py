@@ -151,6 +151,10 @@ def _cli() -> int:
         except UnsupportedClaimTypeError as e:
             print(f"WARN: skipping {claim_id}: {e}", file=sys.stderr)
             continue
+        except Exception as e:  # one bad agent/parse result must not nuke the batch
+            print(f"WARN: skipping {claim_id}: agent error: {type(e).__name__}: {e}",
+                  file=sys.stderr)
+            continue
 
         if args.mode == "verdict":
             bundle = EvidenceBundle(items=output.items)
