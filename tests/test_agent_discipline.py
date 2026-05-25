@@ -80,3 +80,7 @@ def test_extract_structured_fallback_is_empty_bundle_in_evidence_mode():
     flaky = _FlakyExtractor([ValueError("x"), ValueError("y")])
     out = A._extract_structured("agent text", "evidence", extractor_factory=lambda: flaky)
     assert isinstance(out, EvidenceBundle) and out.items == []
+
+
+def test_verdict_prompt_encourages_a_second_search_before_abstaining():
+    assert "at least one more search" in A.VERDICT_SYSTEM_PROMPT.lower()

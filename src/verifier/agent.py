@@ -145,6 +145,11 @@ appear shows it did not happen.
 DEFAULT whenever neither full nor partial credit can be grounded in an existing \
 filing.
 
+If your first search returns no filing that addresses the claim's outcome, issue \
+at least one more search with reformulated terms -- the specific facility or \
+program name, or the relevant financial-statement line item -- before concluding \
+"not_yet_resolvable".
+
 Critical: grade only on filings that exist in your search results. Do NOT \
 assume, infer, or extrapolate an outcome from filings that have not been \
 published, and do NOT read realization into tangential mentions. If the claim's \
