@@ -90,3 +90,9 @@ def test_search_index_query_embedding_is_cached_in_memory(built_index, mock_embe
     first = mock_embeddings.embed_query_calls
     idx.query("share repurchase", after_date=date(2020, 1, 1))
     assert mock_embeddings.embed_query_calls == first
+
+
+def test_max_report_date_returns_latest_reporting_period(built_index):
+    idx = SearchIndex.load("MINI")
+    expected = idx._chunks["report_date"].dropna().max().date()
+    assert idx.max_report_date == expected

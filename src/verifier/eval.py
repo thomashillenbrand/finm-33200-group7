@@ -73,6 +73,47 @@ def aggregate(results: list[PerClaimResult]) -> dict:
     }
 
 
+# --- Run records -----------------------------------------------------------
+
+def _git_head_sha() -> str:
+    """Short git HEAD sha, so a run's numbers are tied to a code state (for
+    revert decisions). 'unknown' if git is unavailable."""
+    import subprocess
+
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+    except Exception:
+        return "unknown"
+
+
+def write_run_record(runs_dir, label, *, results, summary, meta):
+    """Write a self-contained, never-overwritten eval run record:
+
+        <runs_dir>/<meta['timestamp']>_<label>/{per_claim.csv, summary.json, meta.json}
+
+    Each run lands in its own timestamped directory, so successive evals
+    accumulate side by side and a regression can be traced to (and reverted via)
+    the `git_head` recorded in meta. Returns the run directory.
+    """
+    import csv
+    import json
+    from pathlib import Path
+
+    run_dir = Path(runs_dir) / f"{meta['timestamp']}_{label}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    with (run_dir / "per_claim.csv").open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["claim_id", "recall_at_k", "precision", "verdict_match"])
+        for r in results:
+            w.writerow([r.claim_id, r.recall_at_k, r.precision, r.verdict_match])
+    (run_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    (run_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return run_dir
+
+
 # --- CLI -------------------------------------------------------------------
 
 def _load_claims_by_id(claims_csv) -> dict:
@@ -100,7 +141,9 @@ def _cli() -> int:
     import argparse
     import csv
     import json
+    import os
     import sys
+    from datetime import datetime
     from pathlib import Path
 
     from dotenv import load_dotenv

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
@@ -32,7 +33,11 @@ from tenacity import (
     wait_random_exponential,
 )
 
+from pydantic import ValidationError
+
 from schemas import Claim, EvidenceBundle, Verdict
+from verifier.corpus import SearchIndex
+from verifier.index import IndexNotBuiltError
 from verifier.tools import bind_search_filings
 from verifier.trace import print_trace, save_trace, to_records
 
@@ -126,16 +131,28 @@ every excerpt. Return only the structured `EvidenceBundle`."""
 VERDICT_SYSTEM_PROMPT = """You are a financial research assistant verifying \
 forward-looking management claims against subsequent SEC filings.
 
-For each user-provided claim, use the `search_filings` tool to retrieve evidence, \
-then assign a verdict in one of:
-  - "verified": the claim's realization is clearly evidenced
-  - "partially_verified": the claim's realization is partial or ambiguous
-  - "contradicted": evidence indicates the claim did not come true
-  - "not_yet_resolvable": insufficient time has passed or evidence is unavailable
+Use the `search_filings` tool to retrieve evidence, then assign exactly one \
+verdict, grounded ONLY in filings that appear in your search results:
+  - "verified": the claim's realization is clearly evidenced in a retrieved \
+filing -- including if it occurred earlier than the stated horizon. A stated \
+numeric target met within ~10% counts.
+  - "partially_verified": retrieved filings show genuine partial progress, or a \
+numeric outcome that is directionally right but materially off (more than ~10%).
+  - "contradicted": a retrieved filing shows the opposite outcome, or -- when \
+the horizon has elapsed -- the line item where the action would necessarily \
+appear shows it did not happen.
+  - "not_yet_resolvable": no retrieved filing supports the claim. This is the \
+DEFAULT whenever neither full nor partial credit can be grounded in an existing \
+filing.
 
-When in doubt between "verified" and "partially_verified", choose \
-"partially_verified". A formal partial-credit rubric is forthcoming; until it \
-lands, biasing toward the more conservative label keeps verdicts comparable.
+Critical: grade only on filings that exist in your search results. Do NOT \
+assume, infer, or extrapolate an outcome from filings that have not been \
+published, and do NOT read realization into tangential mentions. If the claim's \
+outcome window extends beyond the filings available to you and no filing yet \
+evidences progress, the answer is "not_yet_resolvable" -- never a guess.
+
+When genuinely between "verified" and "partially_verified", choose \
+"partially_verified".
 
 Do not answer from prior knowledge. Every cited excerpt must come from a \
 `search_filings` result in this session.
@@ -169,23 +186,67 @@ def _output_schema(mode: Mode) -> type[EvidenceBundle] | type[Verdict]:
     return EvidenceBundle if mode == "evidence" else Verdict
 
 
-def _extract_structured(final_text: str, mode: Mode) -> EvidenceBundle | Verdict:
-    """Run a follow-up LLM call to coerce the agent's free-form output into the schema.
+_DECISIVE_VERDICTS = {"verified", "partially_verified", "contradicted"}
 
-    Uses LangChain's `.with_structured_output()`, which under the hood requests
-    a JSON object matching the pydantic schema. Deterministic and well-tested.
+
+def _enforce_evidence_grounding(output, mode):
+    """A decisive verdict with no cited evidence is unfounded -> not_yet_resolvable.
+
+    The only deterministically-forced rule of this pass: the agent may not claim
+    verified / partially_verified / contradicted without citing at least one
+    retrieved filing. An evidence-backed verdict (including a legitimately-early
+    'verified') is left untouched. Verdict mode only; evidence mode is a no-op.
     """
-    schema = _output_schema(mode)
-    extractor = init_chat_model(_resolve_parser_model(), temperature=0, max_retries=3).with_structured_output(schema)
-    instruction = (
-        "Extract the agent's final answer into the schema. "
-        "Preserve all evidence excerpts verbatim. Do not truncate, paraphrase, "
-        "or merge excerpts. If the agent's answer is malformed or contains no "
-        "excerpts, return an empty `items` list rather than inventing content. "
-        "Agent answer follows:\n\n"
+    if mode != "verdict":
+        return output
+    if output.verdict in _DECISIVE_VERDICTS and not output.items:
+        return output.model_copy(update={
+            "verdict": "not_yet_resolvable",
+            "reasoning": (output.reasoning
+                          + " [auto: decisive verdict cited no evidence; "
+                            "downgraded to not_yet_resolvable]"),
+        })
+    return output
+
+
+def _empty_output(mode: Mode):
+    """Safe degraded result when the parser can't produce structured output."""
+    if mode == "evidence":
+        return EvidenceBundle(items=[])
+    return Verdict(items=[], verdict="not_yet_resolvable",
+                   reasoning="parser failed to produce structured output")
+
+
+def _parse_instruction(final_text: str) -> str:
+    return (
+        "Extract the agent's final answer into the schema. Preserve all evidence "
+        "excerpts verbatim. Do not truncate, paraphrase, or merge excerpts. If the "
+        "agent's answer is malformed or contains no excerpts, return an empty "
+        "`items` list rather than inventing content. Agent answer follows:\n\n"
         f"{final_text}"
     )
-    return extractor.invoke(instruction)
+
+
+def _extract_structured(final_text: str, mode: Mode, *, extractor_factory=None):
+    """Coerce the agent's free-form output into the schema, with repair.
+
+    The parser LLM occasionally returns an unparseable structured response
+    ("no 'parsed' field nor 'refusal'") that `max_retries` does not cover. Retry
+    once with a reattempt suffix (a different prompt -> a fresh, uncached LLM
+    call); on persistent failure degrade to a safe empty result rather than
+    raising, so one bad parse becomes not_yet_resolvable, not a lost claim.
+    """
+    schema = _output_schema(mode)
+    factory = extractor_factory or (lambda: init_chat_model(
+        _resolve_parser_model(), temperature=0, max_retries=3
+    ).with_structured_output(schema))
+    instruction = _parse_instruction(final_text)
+    for suffix in ("", "\n\n(Reattempt: respond with valid structured JSON only.)"):
+        try:
+            return factory().invoke(instruction + suffix)
+        except (ValueError, ValidationError):
+            continue
+    return _empty_output(mode)
 
 
 def _stringify_content(content: object) -> str:
@@ -236,7 +297,21 @@ def verify(
             allocation type (current scope).
         openai.RateLimitError: if rate limits persist past the retry budget.
     """
-    user_message = _format_claim_for_agent(claim)  # raises on unsupported types
+    # Coverage context (verdict mode only): the latest filing period available
+    # for this ticker tells the agent its evidence boundary. Index is cached, so
+    # this is reused by bind_search_filings below.
+    coverage_date = None
+    fully_covered = None
+    if mode == "verdict":
+        try:
+            coverage_date = SearchIndex.load(claim.ticker).max_report_date
+        except IndexNotBuiltError:
+            coverage_date = None
+        fully_covered = _horizon_within_coverage(claim.horizon_end_date, coverage_date)
+
+    user_message = _format_claim_for_agent(
+        claim, coverage_date=coverage_date, fully_covered=fully_covered
+    )  # raises UnsupportedClaimTypeError on unsupported types
     _configure_cache(cache)
     tool = bind_search_filings(claim.ticker, claim.call_date, claim.horizon_end_date)
     agent = build_agent(mode, tools=[tool])
@@ -249,7 +324,7 @@ def verify(
         print_trace(records)
 
     final_text = _stringify_content(result["messages"][-1].content)
-    return _extract_structured(final_text, mode)
+    return _enforce_evidence_grounding(_extract_structured(final_text, mode), mode)
 
 
 def verify_from_dict(
@@ -274,7 +349,18 @@ class UnsupportedClaimTypeError(ValueError):
     """Raised when verify() is called with a claim_type iter-2 cannot handle."""
 
 
-def _format_claim_for_agent(claim: Claim) -> str:
+def _horizon_within_coverage(horizon_end, coverage):
+    """True iff a filing reporting period reaches the claim's horizon — i.e. the
+    outcome window has elapsed AND is covered by available filings. A filing
+    whose period ends at/after the horizon is itself proof the horizon passed."""
+    return (
+        horizon_end is not None
+        and coverage is not None
+        and coverage >= horizon_end
+    )
+
+
+def _format_claim_for_agent(claim: Claim, *, coverage_date=None, fully_covered=None) -> str:
     """Render the user message the agent loop sees for `claim`.
 
     Deliberately omits the ticker — that's closed over in the tool binding, and
@@ -293,6 +379,25 @@ def _format_claim_for_agent(claim: Claim) -> str:
             f"Compustat-backed numerical_guidance lands in iter 3."
         )
 
+    coverage_line = ""
+    if coverage_date is not None:
+        if fully_covered:
+            coverage_line = (
+                f"\nFilings are available through their {coverage_date.isoformat()} "
+                f"reporting period, which is within this claim's horizon. "
+                f"Grade only on filings that exist.\n"
+            )
+        else:
+            horizon = (claim.horizon_end_date.isoformat()
+                       if claim.horizon_end_date else "unspecified")
+            coverage_line = (
+                f"\nFilings are available only through their "
+                f"{coverage_date.isoformat()} reporting period; this claim's "
+                f"horizon ({horizon}) extends beyond available coverage. Grade "
+                f"only on filings that exist — do not assume or infer outcomes "
+                f"from filings not yet published.\n"
+            )
+
     return (
         f"A management claim was made on {claim.call_date.isoformat()} "
         f"in the {claim.fiscal_period} earnings call.\n\n"
@@ -303,7 +408,8 @@ def _format_claim_for_agent(claim: Claim) -> str:
         f"(resolved end: "
         f"{claim.horizon_end_date.isoformat() if claim.horizon_end_date else 'unknown'})\n"
         f"Speaker: {claim.speaker_name or 'unknown'} "
-        f"({claim.speaker_type or 'unknown'})\n\n"
+        f"({claim.speaker_type or 'unknown'})\n"
+        f"{coverage_line}\n"
         f"Use search_filings to gather evidence. Results are already restricted "
         f"to filings within this claim's time window."
     )
