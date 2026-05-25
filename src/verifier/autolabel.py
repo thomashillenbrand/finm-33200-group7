@@ -19,8 +19,9 @@ import argparse
 import json
 import os
 import random
+import re
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -103,6 +104,9 @@ def select_residual_subset(
     per_ticker_cap: int = 8,
     seed: int = 0,
     exclude_ids: frozenset[str] | set[str] = frozenset(),
+    elapsed_by: date | None = None,
+    forward_per_ticker: int = 0,
+    today: date | None = None,
 ) -> list[str]:
     """Frozen stratified subset of the verifier's production residual.
 
@@ -111,6 +115,13 @@ def select_residual_subset(
     from :func:`autochecker_checked_ids`) is given, that screen is authoritative
     and defines the residual directly. Otherwise it falls back to the no-figure
     heuristic (a quote with no stated figure ≈ not Compustat-verifiable).
+
+    Horizon-aware mode (for a gold set that actually exercises every verdict): when
+    ``elapsed_by`` is given the bulk is drawn from claims whose horizon has
+    elapsed (``horizon_end_date <= elapsed_by``) so they can resolve decisively,
+    and ``forward_per_ticker`` claims with a still-open horizon
+    (``horizon_end_date > today``) are added as deliberate ``not_yet_resolvable``
+    controls. The ambiguous middle (elapsed_by < horizon_end <= today) is dropped.
     Stratified by ticker, capped per ticker, deterministic for a given seed.
     """
     ca = df[df["claim_type"] == "capital_allocation"]
@@ -118,7 +129,54 @@ def select_residual_subset(
         residual = ca[~ca["claim_id"].isin(exclude_ids)]
     else:
         residual = ca[~ca["verbatim_quote"].map(claim_has_figure)]
-    return _stratified_sample(residual, per_ticker_cap=per_ticker_cap, seed=seed)
+
+    if elapsed_by is None and not forward_per_ticker:
+        return _stratified_sample(residual, per_ticker_cap=per_ticker_cap, seed=seed)
+
+    horizon = pd.to_datetime(residual["horizon_end_date"], errors="coerce")
+    picked: list[str] = []
+    if elapsed_by is not None:
+        elapsed = residual[horizon <= pd.Timestamp(elapsed_by)]
+        picked += _stratified_sample(elapsed, per_ticker_cap=per_ticker_cap, seed=seed)
+    if forward_per_ticker:
+        ref = pd.Timestamp(today or date.today())
+        forward = residual[horizon > ref]
+        picked += _stratified_sample(forward, per_ticker_cap=forward_per_ticker, seed=seed)
+    return sorted(set(picked))
+
+
+# Capitalized words at sentence start / pronouns / filler carry no facility
+# signal; drop them so the claim's distinctive proper nouns survive.
+_GENERIC_CAPS = {
+    "we", "our", "the", "this", "that", "these", "those", "they", "it", "i",
+    "additionally", "approximately", "also", "and", "but", "for", "with",
+    "in", "on", "as", "at", "by", "to", "of", "first", "second", "third",
+}
+
+
+def _claim_search_terms(claim, *, limit: int = 6) -> list[str]:
+    """Distinctive proper-noun / acronym terms from the claim's own quote.
+
+    Facility and place names ("Berlin", "Corpus Christi", "RTP") that pin down a
+    narrative capital-allocation claim — exactly what the standard cash-flow
+    sweep terms miss. Added to the sweep (and boosted via ``focus``) so the
+    facility passage surfaces for the labeler. Deterministic keyword extraction
+    only — no model, no embeddings — so independence is untouched. The company's
+    own name is dropped (it matches its own filings everywhere, no signal).
+    """
+    text = claim.verbatim_quote
+    company_words = {w.lower() for w in re.findall(r"[A-Za-z]+", claim.company)}
+    candidates = (re.findall(r"\b[A-Z][a-zA-Z]{2,}\b", text)
+                  + re.findall(r"\b[A-Z]{2,5}\b", text))
+    out: list[str] = []
+    seen: set[str] = set()
+    for w in candidates:
+        lw = w.lower()
+        if lw in _GENERIC_CAPS or lw in company_words or lw in seen:
+            continue
+        seen.add(lw)
+        out.append(w)
+    return out[:limit]
 
 
 def _decision_to_evidence(candidates, indices):
@@ -241,17 +299,16 @@ def build_decider(model_name=None):
 
 def _label_one(claim, decider, rubric_text, *, labeler, max_candidates):
     """Run the sweep for one claim and produce its GoldLabel."""
-    focus = _claim_focus(claim)
+    claim_terms = _claim_search_terms(claim)
+    focus = _claim_focus(claim) | set(claim_terms)   # boost the claim's own terms to the top
+    terms = list(_SWEEP_TERMS.get(claim.claim_type, [])) + claim_terms
     until = None if claim.horizon_end_date else grading_window(claim)
     index_df = _load_filing_index(claim.ticker)
     filings = candidate_filings(
         claim, index_df, until_date=until, horizon_end=claim.horizon_end_date
     )
     sec_dir = PULLED_DATA_ROOT / claim.ticker / "SEC"
-    candidates = sweep(
-        filings, sec_dir,
-        terms=list(_SWEEP_TERMS.get(claim.claim_type, [])), focus=focus,
-    )[:max_candidates]
+    candidates = sweep(filings, sec_dir, terms=terms, focus=focus)[:max_candidates]
     return _build_label(claim, candidates, decider, rubric_text, labeler=labeler)
 
 
@@ -259,8 +316,10 @@ def _cli_select(args) -> int:
     df = pd.read_csv(args.claims).fillna("")
     exclude = (autochecker_checked_ids(args.exclude_checked)
                if args.exclude_checked else frozenset())
+    elapsed_by = date.fromisoformat(args.elapsed_by) if args.elapsed_by else None
     ids = select_residual_subset(
         df, per_ticker_cap=args.per_ticker, seed=args.seed, exclude_ids=exclude,
+        elapsed_by=elapsed_by, forward_per_ticker=args.forward_per_ticker,
     )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text("\n".join(ids) + "\n", encoding="utf-8")
@@ -310,6 +369,13 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Autochecker output JSONL; its verdicted claim_ids are "
                    "excluded so the residual is defined by the real Compustat "
                    "screen instead of the no-figure heuristic.")
+    s.add_argument("--elapsed-by", default=None,
+                   help="YYYY-MM-DD; draw the resolvable bulk from claims whose "
+                   "horizon ended on/before this date (so they can grade "
+                   "decisively).")
+    s.add_argument("--forward-per-ticker", type=int, default=0,
+                   help="Also include this many still-open-horizon claims per "
+                   "ticker as not_yet_resolvable controls.")
     s.set_defaults(func=_cli_select)
 
     label_p = sub.add_parser("label", help="Auto-label the pinned subset with GPT-5.5.")

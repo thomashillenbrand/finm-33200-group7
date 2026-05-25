@@ -218,3 +218,36 @@ def test_select_residual_subset_excludes_autochecker_checked_ids():
         df, exclude_ids={"A_chk"}, per_ticker_cap=8, seed=0
     )
     assert ids == ["A_keep", "T_keep"]   # screen decides, not the figure heuristic
+
+
+def test_select_residual_subset_horizon_aware_keeps_elapsed_plus_forward():
+    rows = [
+        _claim_row("EL1", "AMZN", "capital_allocation", "add capacity"),       # he 2021-12-31 (elapsed)
+        _claim_row("EL2", "AMZN", "capital_allocation", "add more capacity"),  # he 2021-12-31 (elapsed)
+        _claim_row("FW1", "AMZN", "capital_allocation", "future capacity"),
+        _claim_row("MID", "AMZN", "capital_allocation", "mid capacity"),
+    ]
+    df = pd.DataFrame(rows)
+    df.loc[df.claim_id == "FW1", "horizon_end_date"] = "2027-12-31"   # forward
+    df.loc[df.claim_id == "MID", "horizon_end_date"] = "2025-12-31"   # neither elapsed nor forward
+    ids = autolabel.select_residual_subset(
+        df, elapsed_by=date(2024, 12, 31), forward_per_ticker=1,
+        today=date(2026, 5, 25), per_ticker_cap=8, seed=0,
+    )
+    assert "EL1" in ids and "EL2" in ids   # elapsed bulk kept
+    assert "FW1" in ids                      # one forward control kept
+    assert "MID" not in ids                  # ambiguous middle dropped
+
+
+def test_claim_search_terms_extracts_proper_nouns_and_drops_generic_and_company():
+    from verifier.label import _row_to_claim
+    row = _claim_row("X", "TSLA", "capital_allocation",
+                     "We expect our Corpus Christi refinery and the Berlin factory and RTP to ramp")
+    terms = [t.lower() for t in autolabel._claim_search_terms(_row_to_claim(row))]
+    assert {"corpus", "christi", "berlin", "rtp"} <= set(terms)  # facility proper nouns + acronym
+    assert "we" not in terms                                      # short sentence-start pronoun
+
+    row2 = _claim_row("Y", "AMZN", "capital_allocation", "Amazon will expand the Shanghai site")
+    row2["company"] = "Amazon.com, Inc."
+    t2 = [t.lower() for t in autolabel._claim_search_terms(_row_to_claim(row2))]
+    assert "shanghai" in t2 and "amazon" not in t2               # company name dropped
