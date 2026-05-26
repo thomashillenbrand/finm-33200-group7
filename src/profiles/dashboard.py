@@ -127,18 +127,31 @@ def build_data(verdicts_path: str, claims_path: str, runs_dir: str) -> dict:
         year_by_ticker[t] = row
 
     # ---- eval runs ------------------------------------------------------
+    # Only show Baseline and Discipline Pass — citation-discipline was a
+    # documented regression and is excluded to avoid confusing the chart.
+    def _run_label(raw: str) -> str | None:
+        s = raw.lower()
+        if "baseline" in s:
+            return "Baseline"
+        if "discipline" in s and "citation" not in s:
+            return "Discipline Pass"
+        return None   # None = skip this run
+
     eval_runs: list[dict] = []
     for fp in sorted(glob.glob(f"{runs_dir}/*/summary.json")):
         try:
             with open(fp) as f:
                 d = json.load(f)
-            label = os.path.basename(os.path.dirname(fp))
+            raw   = d.get("label", os.path.basename(os.path.dirname(fp)))
+            label = _run_label(raw)
+            if label is None:
+                continue
             eval_runs.append({
-                "label":           d.get("label", label),
-                "recall":          d.get("mean_recall_at_k"),
-                "precision":       d.get("mean_precision"),
+                "label":            label,
+                "recall":           d.get("mean_recall_at_k"),
+                "precision":        d.get("mean_precision"),
                 "verdict_accuracy": d.get("verdict_accuracy"),
-                "n":               d.get("n_claims"),
+                "n":                d.get("n_claims"),
             })
         except Exception:
             pass
@@ -146,12 +159,16 @@ def build_data(verdicts_path: str, claims_path: str, runs_dir: str) -> dict:
         try:
             with open(fp) as f:
                 d = json.load(f)
+            raw   = d.get("label", os.path.basename(fp))
+            label = _run_label(raw)
+            if label is None:
+                continue
             eval_runs.append({
-                "label":           d.get("label", os.path.basename(fp)),
-                "recall":          d.get("mean_recall_at_k"),
-                "precision":       d.get("mean_precision"),
+                "label":            label,
+                "recall":           d.get("mean_recall_at_k"),
+                "precision":        d.get("mean_precision"),
                 "verdict_accuracy": d.get("verdict_accuracy"),
-                "n":               d.get("n_claims"),
+                "n":                d.get("n_claims"),
             })
         except Exception:
             pass
@@ -928,11 +945,8 @@ document.getElementById('hero-accuracy').textContent = bestRun && bestRun.verdic
 
   const labels = runs.map(r => {{
     const s = r.label || '';
-    // shorten for display
-    if (s.includes('baseline')) return 'Baseline';
-    if (s.includes('discipline')) return 'Discipline Pass';
-    if (s.includes('citation')) return 'Citation Pass';
-    return s.split('/').pop().substring(0, 20);
+    // labels are already humanised in Python — pass through as-is
+    return s || label.substring(0, 24);
   }});
 
   const metrics = [
