@@ -1,20 +1,32 @@
 # Gold-set labels
 
-Human-assigned ground truth for evaluating the verification agent. One JSONL
-row per labeled claim. The scorer (`python -m verifier.eval`) reads these files
+Ground truth for evaluating the verification agent. One JSONL row per labeled
+claim (a `GoldLabel`). The scorer (`python -m verifier.eval`) reads these files
 and compares the agent's output against them.
+
+> **As-built (2026-05-25): the active gold set is LLM-labeled, not hand-labeled.**
+> Under time pressure, hand-labeling was replaced by `python -m verifier.autolabel`
+> (GPT-5.5 + the rubric, grading over the *same deterministic keyword sweep* a
+> human would use — never the agent's FAISS index). It lives in `auto/`. This is
+> a flagged shortcoming (see `CLAUDE.md` deliverable #3). The human how-to below
+> still documents the schema and the manual path (`verifier.label`), which the
+> auto-labeler mirrors.
 
 ## What lives here
 
-- `template.jsonl` — one example row showing the format. **Do not label into
-  this file** — copy its shape into a per-ticker file.
-- `pilot_<ticker>.jsonl` — the actual labels (e.g. `pilot_tsla.jsonl`). One file
-  per ticker; the scorer merges them.
+- `auto/` — the **LLM-labeled** gold set: `auto_<ticker>.jsonl` (labeler tag
+  `gpt-5.5`) + `subset_ids.txt`, the pinned/frozen claim subset. **This is what
+  the eval scores.** Drawn from the autochecker's cap-alloc residual.
+- `template.jsonl` — one example row showing the format.
+- `pilot_<ticker>.jsonl` — earlier hand/pilot labels, if any. One file per ticker.
 - `README.md` — this file (schema + how-to-label).
 
-The verdict criteria live separately in [`docs/labeling_rubric.md`](../../docs/labeling_rubric.md).
-Read that before labeling — it defines what "verified" vs "partially_verified"
-actually means for each claim type.
+Two labeling tools, both agent-independent (keyword sweep, no FAISS): the human
+helper `python -m verifier.label` and the LLM `python -m verifier.autolabel`.
+
+The verdict criteria live in [`docs/labeling_rubric.md`](../../docs/labeling_rubric.md)
+(now fleshed out) — it defines `verified` vs `partially_verified` vs the
+evidenced-non-occurrence `contradicted` rule per claim type.
 
 ## How to label one claim
 

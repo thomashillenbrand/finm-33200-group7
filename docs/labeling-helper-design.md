@@ -5,6 +5,13 @@
 > interactive, single-command grader, not a print-only two-pass tool — see
 > "Divergences from the original plan" below. Pending review by Thomas
 > (workstream C), since it touches `src/verifier/`.
+>
+> **2026-05-25:** this human helper now has an LLM sibling,
+> `src/verifier/autolabel.py` (`python -m verifier.autolabel`), which reuses this
+> module's deterministic keyword sweep but has GPT-5.5 + the rubric pick evidence
+> and assign the verdict instead of a human. The active gold set
+> (`data/gold/auto/`) is produced by it — LLM-labeled, not hand-labeled. See
+> `docs/autolabel-gold-eval-design.md`.
 
 ## Goal
 

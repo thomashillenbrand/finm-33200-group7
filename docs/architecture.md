@@ -12,8 +12,9 @@ see `README.md`. For deferred work see `docs/future_optimizations.md`.
 
 The system turns one earnings call into a set of *forward-looking management
 claims*, each accompanied by *cited evidence* drawn from the same firm's
-subsequent SEC filings. A human labeler then reads each (claim, evidence)
-pair and assigns a verdict.
+subsequent SEC filings. A labeler — **now an LLM (GPT-5.5 + rubric) under time
+pressure, originally intended to be human** — then reads each (claim, evidence)
+pair and assigns a verdict, independently of the agent's own verdict.
 
 ```mermaid
 flowchart LR
@@ -45,17 +46,26 @@ flowchart LR
     end
 
     subgraph D[Workstream D — Labeling & profiles]
-        label["human labelers<br/>(gold set, days 6–7)"]
+        label["gold labeler — verifier.autolabel<br/>(GPT-5.5 + rubric over keyword sweep,<br/>agent-independent)"]
         bundle --> label
         trace --> label
-        label --> profile["per-firm truthfulness<br/>profiles + writeup"]
+        label --> profile["per-firm truthfulness<br/>profiles + writeup (assembly TBD)"]
     end
 ```
 
 **Load-bearing invariant.** The arrow from C into D is `EvidenceBundle` —
-evidence-only, **no verdict field by schema construction**. Letting the agent
-propose a verdict would bias the labeler. The agent's verdict mode exists for
-spot-checks but is not on the labeling path.
+evidence-only, **no verdict field by schema construction**. The labeler assigns
+verdicts over a *keyword sweep*, never the agent's FAISS retrieval; the agent
+never sees the rubric. That two-sided independence is what keeps recall@k and
+verdict accuracy non-circular even with an LLM labeler.
+
+**Two things the diagram simplifies.** (1) **The cascade:** before the agentic
+verifier, a Compustat **`autochecker`** (`src/autochecker/`, workstream C iter-3)
+grades the claims it can; the agentic verifier handles the *residual* the
+autochecker screens out (`is_compustat_relevant: false`). Per-firm profiles
+combine **both** halves' verdicts. (2) **Verdict-mode** is now also a production
+path (the residual run), not only spot-checks — `verify(allow_unsupported=True)`
+even grades non-cap-alloc claims there, but those verdicts are unvalidated.
 
 ---
 
@@ -498,25 +508,26 @@ validated the no-time-leak / no-verdict-language guarantees.
 
 ## 7. Workstream D — Evaluation & writeup
 
-Part code, part human sprint. The scoring scaffolding has landed; the gold set
-it scores against has not yet been produced.
+The scoring scaffolding **and** an LLM gold-labeler have landed; the gold set
+exists (LLM-labeled, 2026-05-25 — *not* hand-labeled, see `CLAUDE.md`
+deliverable #3). The remaining build is profile assembly.
 
 ```mermaid
 flowchart TD
-    claims["data/claims/*.csv"]
-    human["human labelers<br/>(read filings independently<br/>of the agent)"]
-    gold["data/gold/*.jsonl<br/>(GoldLabel rows)"]
-    evalcli["python -m verifier.eval<br/>--gold … --claims … --mode … --k …"]
+    claims["data/claims/55_full_run.csv"]
+    autolabel["python -m verifier.autolabel<br/>GPT-5.5 + rubric over the keyword sweep<br/>(agent-independent — no FAISS)"]
+    gold["data/gold/auto/*.jsonl<br/>(GoldLabel rows; LLM-labeled)"]
+    evalcli["python -m verifier.eval --gold … --claims …<br/>--mode verdict --no-cache --run-label …"]
     verify["verify() — run live per gold claim"]
-    out["data/eval/per_claim_results.csv<br/>+ stdout summary"]
+    runrec["data/eval/runs/&lt;ts&gt;_&lt;label&gt;/<br/>per_claim.csv + summary.json + meta.json (git_head)"]
 
-    claims --> human
-    human --> gold
+    claims --> autolabel
+    autolabel --> gold
     gold --> evalcli
     claims --> evalcli
     evalcli --> verify
     verify --> evalcli
-    evalcli --> out
+    evalcli --> runrec
 ```
 
 ### Code that exists
@@ -525,12 +536,15 @@ flowchart TD
 |---|---|
 | `verifier/gold.py` | `GoldEvidence` / `GoldLabel` schema + `load_gold_labels(path)` JSONL loader. Enforces: non-empty `claim_id`; `verdict ∈ VerdictLabel`; decisive verdicts (`verified`/`partially_verified`/`contradicted`) require non-empty `expected_evidence`. Loader raises with the offending row number rather than dropping bad rows. |
 | `verifier/eval.py` | The scorer. Pure functions `score_retrieval` (recall@k + precision at accession granularity), `score_verdict` (exact verdict match), `aggregate` (means over scorable claims) are unit-tested offline. `python -m verifier.eval` looks each gold claim up in the claims CSV, **runs the agent live** (`verify()`), and scores its output. Claims with no labeled evidence score `None` (not 0) so they don't drag the mean down. |
-| `data/gold/` | `template.jsonl` + `README.md` (labeling how-to + the independence rule). Hand-labeled `pilot_<ticker>.jsonl` files land here. |
-| `data/eval/` | `per_claim_results.csv` written by the eval CLI. |
+| `verifier/label.py` | **Human** gold-set helper (built): per-claim deterministic keyword sweep over filing text → candidate passages; the labeler picks evidence + verdict. Imports neither the agent nor FAISS (enforced by test). |
+| `verifier/autolabel.py` | **LLM** gold-set labeler (built, 2026-05-25): GPT-5.5 + the rubric grade over `label.py`'s sweep. `select` (freeze the residual subset; `--exclude-checked`, `--elapsed-by`, `--forward-per-ticker`) and `label` (`GOLD_LABELER_MODEL`) subcommands. |
+| `data/gold/auto/` | LLM-labeled `auto_<ticker>.jsonl` + the frozen `subset_ids.txt`. |
+| `data/eval/runs/<ts>_<label>/` | Per-run record: `per_claim.csv` + `summary.json` + `meta.json` (`git_head`, model, gold/claims/k). Lets iterations be compared and a regression reverted to a commit. |
+| `data/verdicts/agent_screenfalse_55.jsonl` | Agent verdicts over the autochecker residual (all claim types; cap-alloc `validated`, numerical `validated=False`) — the agent half of the truth-profile inputs. |
 
 The eval CLI re-runs `verify()` per claim because the agent's structured output
-is not persisted in the trace; the SQLite chat cache (on by default) keeps
-re-scoring cheap after the first pass.
+is not persisted in the trace; the SQLite chat cache keeps re-scoring cheap, but
+use `--no-cache` when a prompt changed so the new logic actually runs.
 
 ### Circularity guarantee (load-bearing)
 
@@ -540,24 +554,31 @@ circular — the agent is scored against its own output. `data/gold/README.md`
 states the rule. This is why the labeling helper (below) is designed to use
 keyword/regex search, *not* the FAISS index the eval grades.
 
-### Still to do (not yet built / not yet run)
+### Done since (2026-05-25)
 
-1. **Verdict rubric** — `docs/labeling_rubric.md` is an **empty stub**. It is the
-   prerequisite for *consistent* labels (verdict-bucket definitions +
-   capital-allocation partial-credit policy) and is a team deliverable, not an
-   engineering task. Tracks `CLAUDE.md` open items #3 and #4.
-2. **Agent-free labeling helper** — `docs/labeling-helper-design.md` specs a
-   `verifier.label` CLI that surfaces candidate filings + keyword matches so a
-   human can assemble gold rows quickly without contaminating the eval.
-   **Designed, not built.**
-3. **Pilot labeling sprint** — hand-label ~15–20 TSLA `capital_allocation`
-   claims → `data/gold/pilot_tsla.jsonl`, then run `verifier.eval`. This
-   produces the first "is the verifier any good?" numbers; everything above is
-   scaffolding for it. Whole-team effort, workplan days 6–7.
+- **Verdict rubric** — `docs/labeling_rubric.md` is now fleshed out (four-bucket
+  definitions + partial-credit policy + an evidenced-non-occurrence rule).
+- **Labeling helpers** — both `verifier.label` (human) and `verifier.autolabel`
+  (LLM) are built.
+- **First eval numbers** — discipline-pass run: recall@8 0.82 / verdict 0.71 /
+  forward-control abstention 5/6. Full narrative in `docs/autolabel-eval-summary.md`.
 
-The gold set, once it exists, also unlocks the chunker/embedding/retriever
-autoresearcher (see `docs/future_optimizations.md`) and the per-firm
-truthfulness profiles + final paper.
+### Still to do
+
+1. **Profile assembly (deliverable #2).** Join the two verdict halves —
+   autochecker (`screen`-relevant) + agent (`screen_false` residual,
+   `data/verdicts/agent_screenfalse_55.jsonl`), keyed by `claim_id` with
+   validated/unvalidated flags — into per-firm truthfulness profiles. **Not built.**
+2. **Validate numerical verdicts.** The residual run graded numerical claims via
+   `verify(allow_unsupported=True)`, but the gold set is cap-alloc only, so those
+   are provisional (open item #9).
+3. **Multi-run eval averaging.** Single `--no-cache` runs are noisy (open item
+   #10); needed to adjudicate small prompt changes.
+
+The gold set also unlocks the chunker/embedding/retriever autoresearcher (see
+`docs/future_optimizations.md`) — deferred; the trace review found retrieval is
+already strong (92% of gold filings surfaced), so citation/reasoning, not
+retrieval, is the next lever.
 
 ---
 
