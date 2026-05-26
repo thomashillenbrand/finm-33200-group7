@@ -9,6 +9,10 @@ See [`CLAUDE.md`](CLAUDE.md) for full project context, [`workplan.md`](workplan.
 For an end-to-end dataflow walkthrough with diagrams (workstreams A–D,
 schemas, module-by-module tour), see [`docs/architecture.md`](docs/architecture.md).
 
+**To reproduce the full pipeline from scratch**, see [`docs/pipeline.md`](docs/pipeline.md) — nine steps with exact CLI commands, from data pull to final evaluation.
+
+**To view results**, open [`data/profiles/dashboard.html`](data/profiles/dashboard.html) in a browser, or run `streamlit run src/profiles/app.py`, or open [`notebooks/results.ipynb`](notebooks/results.ipynb).
+
 New to git, or want a quick reference for our branch-and-PR workflow? See [`GIT_CHEATSHEET.md`](GIT_CHEATSHEET.md).
 
 ## Project structure
@@ -44,15 +48,22 @@ finm-33200-group7/
 │   |   ├── gold.py            # GoldLabel / GoldEvidence schema + JSONL loader
 │   |   ├── eval.py            # scorer: recall@k / precision / verdict accuracy; per-run records (git_head)
 │   |   └── run.py             # CLI: python -m verifier.run --claim ... --mode {evidence,verdict}
-│   └── autochecker/           # workstream C iter-3 — Compustat-backed numerical grader
-│       ├── __init__.py        # package docstring
-│       ├── schema.py          # Pydantic: ScreenResult, EvidenceResult, VerdictResult, AutocheckRecord
-│       ├── compustat.py       # parquet loader, YTD→quarterly delta, pre/post-call slicing, field codebook
-│       ├── prompts.py         # versioned stage-1 + stage-2 prompts (evidence/verdict variants)
-│       ├── llm.py             # raw OpenAI SDK structured-output wrapper + rate-limit retry
-│       ├── screen.py          # stage 1: Compustat-relevance screen
-│       ├── verify.py          # stage 2: verification, citation scrubbing
-│       └── run.py             # CLI: python -m autochecker.run --claims ... --mode {evidence,verdict}
+│   ├── autochecker/           # workstream C iter-3 — Compustat-backed numerical grader
+│   │   ├── __init__.py        # package docstring
+│   │   ├── schema.py          # Pydantic: ScreenResult, EvidenceResult, VerdictResult, AutocheckRecord
+│   │   ├── compustat.py       # parquet loader, YTD→quarterly delta, pre/post-call slicing, field codebook
+│   │   ├── prompts.py         # versioned stage-1 + stage-2 prompts (evidence/verdict variants)
+│   │   ├── llm.py             # raw OpenAI SDK structured-output wrapper + rate-limit retry
+│   │   ├── screen.py          # stage 1: Compustat-relevance screen
+│   │   ├── verify.py          # stage 2: verification, citation scrubbing
+│   │   └── run.py             # CLI: python -m autochecker.run --claims ... --mode {evidence,verdict}
+│   └── profiles/              # workstream D — results visualisation + dashboard
+│       ├── __init__.py
+│       ├── visualize.py       # CLI: python -m profiles.visualize → 7 static charts
+│       ├── dashboard.py       # generates data/profiles/dashboard.html (interactive Plotly)
+│       └── app.py             # Streamlit app: streamlit run src/profiles/app.py
+├── notebooks/
+│   └── results.ipynb          # end-to-end results walkthrough with all charts inline
 ├── tests/
 │   ├── test_extractor_*.py    # extractor tests: schema, reader, horizon, provenance, filter, dedupe, context, output, smoke
 │   ├── test_schema.py         # verifier Pydantic schema tests
@@ -64,15 +75,14 @@ finm-33200-group7/
 │   ├── claims/                # extractor output — claims CSVs (e.g. 55_full_run.csv)
 │   ├── gold/                  # gold labels; gold/auto/ = LLM-labeled subset + pinned subset_ids.txt
 │   ├── eval/                  # eval output: per_claim_results.csv + runs/<ts>_<label>/ run records
-│   ├── verdicts/              # agent verdicts over the autochecker residual (agent_screenfalse_55.jsonl)
+│   ├── verdicts/              # combined verdicts (combined_55_final.csv) + agent residual JSONL
 │   ├── stub/                  # canned fixtures (example_claim.json + canned_excerpts.json)
 │   ├── autochecker/           # autochecker run outputs — per-claim JSONL + flat summary CSV
+│   ├── profiles/              # dashboard HTML + 7 static per-section charts (PNG)
 │   └── traces/                # per-run agent traces (gitignored)
 ├── pulled_data/               # data_pull output: per-ticker transcripts, Compustat, SEC filings (gitignored)
 └── docs/                      # design docs and other supporting material
 ```
-
-Workstream D (evaluation & writeup) will add its own modules under `src/` as it comes online.
 
 ## Setup
 
@@ -455,9 +465,70 @@ for the eval narrative (baseline → discipline pass → trace review → citati
 **Cascade / residual verdicts.** In production the autochecker grades what
 Compustat can; the agent grades the rest (`is_compustat_relevant: false`). Agent
 verdicts over that residual (all claim types) are captured in
-`data/verdicts/agent_screenfalse_55.jsonl` — the agent half of the per-firm
-truth-profile inputs (the autochecker half is `data/autochecker/…autochecker-v1.jsonl`).
-Profile assembly that joins the two halves is not yet built.
+`data/verdicts/agent_screenfalse_55.jsonl`. These two halves are merged into
+`data/verdicts/combined_55_final.csv`, which drives the dashboard and notebook.
+
+## Results & Visualization (workstream D)
+
+The `profiles` package assembles the combined verdict CSV into charts and a
+self-contained interactive dashboard. Three ways to view results:
+
+| Method | Command | Output |
+|---|---|---|
+| Static charts | `python -m profiles.visualize` | 7 PNG files in `data/profiles/` |
+| HTML dashboard | `python -m profiles.dashboard` | `data/profiles/dashboard.html` (open in any browser) |
+| Streamlit app | `streamlit run src/profiles/app.py` | Live app on `localhost:8501` |
+| Jupyter notebook | `jupyter notebook notebooks/results.ipynb` | All charts inline with narrative |
+
+The dashboard and notebook both read from `data/verdicts/combined_55_final.csv`
+(the merged autochecker + agent output) and `data/claims/55_full_run.csv`.
+
+### Static charts (`python -m profiles.visualize`)
+
+Writes 7 PNGs to `data/profiles/`:
+
+| File | Chart |
+|---|---|
+| `01_overview_donuts.png` | Verdict distribution across all claims (donut) |
+| `02_company_verdict_bars.png` | Per-company verdict breakdown (stacked bar) |
+| `03_claim_type_breakdown.png` | Claim-type split by company |
+| `04_truth_score_over_time.png` | Rolling truth score by call date |
+| `05_heatmap_company_year.png` | Company × year truth-score heatmap |
+| `06_overall_verdict_counts.png` | Raw verdict counts |
+| `07_score_comparison.png` | Autochecker vs. agent score comparison |
+
+### Interactive dashboard (`data/profiles/dashboard.html`)
+
+A single self-contained HTML file (Plotly.js embedded). No server needed — open
+it directly in a browser. All charts are interactive (hover, zoom, filter by
+verdict or company). Sections: Overview, Companies, Trends, Agent Eval. Run the
+generator to rebuild after any data change:
+
+```bash
+python -m profiles.dashboard \
+    --verdicts data/verdicts/combined_55_final.csv \
+    --claims   data/claims/55_full_run.csv \
+    --runs-dir data/eval/runs \
+    --out      data/profiles/dashboard.html
+```
+
+### Streamlit app (`src/profiles/app.py`)
+
+Renders the same HTML dashboard inside a full-screen Streamlit iframe. Useful
+for sharing a live view with teammates:
+
+```bash
+streamlit run src/profiles/app.py
+```
+
+The app caches the dashboard build with `@st.cache_data`, so reloads are fast
+after the first build.
+
+### Jupyter notebook (`notebooks/results.ipynb`)
+
+A narrative walkthrough: pipeline overview, per-company stats table, all charts
+inline, and the agent eval metrics (recall@8, precision, verdict accuracy). Run
+top-to-bottom with the `truth` conda env active.
 
 ## Adding or updating dependencies
 
