@@ -73,6 +73,47 @@ def aggregate(results: list[PerClaimResult]) -> dict:
     }
 
 
+# --- Run records -----------------------------------------------------------
+
+def _git_head_sha() -> str:
+    """Short git HEAD sha, so a run's numbers are tied to a code state (for
+    revert decisions). 'unknown' if git is unavailable."""
+    import subprocess
+
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+    except Exception:
+        return "unknown"
+
+
+def write_run_record(runs_dir, label, *, results, summary, meta):
+    """Write a self-contained, never-overwritten eval run record:
+
+        <runs_dir>/<meta['timestamp']>_<label>/{per_claim.csv, summary.json, meta.json}
+
+    Each run lands in its own timestamped directory, so successive evals
+    accumulate side by side and a regression can be traced to (and reverted via)
+    the `git_head` recorded in meta. Returns the run directory.
+    """
+    import csv
+    import json
+    from pathlib import Path
+
+    run_dir = Path(runs_dir) / f"{meta['timestamp']}_{label}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    with (run_dir / "per_claim.csv").open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["claim_id", "recall_at_k", "precision", "verdict_match"])
+        for r in results:
+            w.writerow([r.claim_id, r.recall_at_k, r.precision, r.verdict_match])
+    (run_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    (run_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return run_dir
+
+
 # --- CLI -------------------------------------------------------------------
 
 def _load_claims_by_id(claims_csv) -> dict:
@@ -100,7 +141,9 @@ def _cli() -> int:
     import argparse
     import csv
     import json
+    import os
     import sys
+    from datetime import datetime
     from pathlib import Path
 
     from dotenv import load_dotenv
@@ -117,7 +160,12 @@ def _cli() -> int:
     p.add_argument("--no-cache", action="store_true",
                    help="Bypass the SQLite chat cache for fresh LLM calls.")
     p.add_argument("--output", type=Path, default=Path("data/eval/per_claim_results.csv"),
-                   help="Where to write the per-claim CSV.")
+                   help="Where to write the 'latest' per-claim CSV (convenience pointer).")
+    p.add_argument("--run-label", default=None,
+                   help="Label for this run's saved record (default: a timestamp). "
+                        "Each run is saved individually under --runs-dir, never overwritten.")
+    p.add_argument("--runs-dir", type=Path, default=Path("data/eval/runs"),
+                   help="Directory of individually-saved run records.")
     args = p.parse_args()
 
     load_dotenv()
@@ -177,6 +225,26 @@ def _cli() -> int:
         for r in results:
             w.writerow([r.claim_id, r.recall_at_k, r.precision, r.verdict_match])
     print(f"wrote {args.output}")
+
+    # Individually-saved run record (never overwritten) so runs are comparable
+    # and a regression can be reverted via the recorded git_head.
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    label = args.run_label or "run"
+    meta = {
+        "timestamp": timestamp,
+        "label": label,
+        "git_head": _git_head_sha(),
+        "agent_model": os.environ.get("VERIFIER_AGENT_MODEL", ""),
+        "parser_model": os.environ.get("VERIFIER_PARSER_MODEL", ""),
+        "gold": str(args.gold),
+        "claims": str(args.claims),
+        "mode": args.mode,
+        "k": args.k,
+        "cache": not args.no_cache,
+    }
+    run_dir = write_run_record(args.runs_dir, label, results=results,
+                               summary=summary, meta=meta)
+    print(f"wrote run record -> {run_dir}")
     return 0
 
 

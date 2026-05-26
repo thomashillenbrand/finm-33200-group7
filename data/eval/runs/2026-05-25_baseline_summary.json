@@ -1,0 +1,14 @@
+{
+  "label": "baseline — pre-discipline-pass (gpt-5.1 verdict agent)",
+  "date": "2026-05-25",
+  "git_commit": "19f6834 (+ uncommitted verifier date/eval fixes)",
+  "gold": "data/gold/auto (28-claim strengthened gold set)",
+  "claims": "data/claims/55_full_run.csv",
+  "mode": "verdict", "k": 8,
+  "n_claims": 27, "n_skipped": 1,
+  "n_recall_scored": 12,
+  "mean_recall_at_k": 0.75,
+  "mean_precision": 0.3319,
+  "verdict_accuracy": 0.5556,
+  "notes": "1 claim (AMZN_20200730_64c18b2c) skipped on a parser empty-output error; forward controls 3/6 over-claimed"
+}

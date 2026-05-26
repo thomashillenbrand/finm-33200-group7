@@ -90,3 +90,29 @@ def test_format_claim_for_agent_includes_quote_and_summary():
     msg = _format_claim_for_agent(c)
     assert c.verbatim_quote in msg
     assert c.summary in msg
+
+
+def test_format_claim_includes_open_coverage_warning():
+    c = _claim(horizon_end_date=date(2026, 12, 31))
+    msg = _format_claim_for_agent(c, coverage_date=date(2024, 12, 31), fully_covered=False)
+    assert "2024-12-31" in msg                      # coverage ceiling stated
+    assert "do not assume" in msg.lower()           # don't infer unpublished filings
+    assert "beyond" in msg.lower()
+
+
+def test_format_claim_includes_covered_note_when_within_coverage():
+    c = _claim(horizon_end_date=date(2024, 12, 31))
+    msg = _format_claim_for_agent(c, coverage_date=date(2025, 2, 20), fully_covered=True)
+    assert "within" in msg.lower()
+
+
+def test_format_claim_omits_coverage_line_when_not_provided():
+    c = _claim()
+    msg = _format_claim_for_agent(c)               # no coverage args -> backwards compatible
+    assert "available through" not in msg.lower()
+
+
+def test_format_claim_allow_unsupported_bypasses_gate():
+    c = _claim(claim_type="numerical_guidance")
+    msg = _format_claim_for_agent(c, allow_unsupported=True)   # must NOT raise
+    assert "numerical_guidance" in msg

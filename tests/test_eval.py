@@ -96,3 +96,22 @@ def test_aggregate_empty_results():
     assert summary["n_claims"] == 0
     assert summary["mean_recall_at_k"] is None
     assert summary["verdict_accuracy"] is None
+
+
+def test_write_run_record_is_self_contained_and_never_overwrites(tmp_path):
+    import json
+    from verifier.eval import write_run_record
+    results = [PerClaimResult("C1", 1.0, 0.5, True),
+               PerClaimResult("C2", None, None, False)]
+    summary = {"n_claims": 2, "mean_recall_at_k": 1.0, "verdict_accuracy": 0.5}
+    meta = {"timestamp": "20260525_180000", "label": "exp", "git_head": "abc123",
+            "mode": "verdict", "k": 8}
+    run_dir = write_run_record(tmp_path, "exp", results=results, summary=summary, meta=meta)
+    assert run_dir.name == "20260525_180000_exp"
+    assert (run_dir / "per_claim.csv").exists()
+    assert json.loads((run_dir / "summary.json").read_text())["verdict_accuracy"] == 0.5
+    assert json.loads((run_dir / "meta.json").read_text())["git_head"] == "abc123"
+    # a second run (different timestamp) coexists -> nothing overwritten
+    run_dir2 = write_run_record(tmp_path, "exp", results=results, summary=summary,
+                                meta=dict(meta, timestamp="20260525_190000"))
+    assert run_dir2 != run_dir and run_dir.exists() and run_dir2.exists()

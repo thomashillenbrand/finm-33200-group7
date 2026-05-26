@@ -1,0 +1,12 @@
+{
+  "timestamp": "20260525_184308",
+  "label": "citation-discipline",
+  "git_head": "d085cc7",
+  "agent_model": "openai:gpt-5.1-2025-11-13",
+  "parser_model": "openai:gpt-5.1-2025-11-13",
+  "gold": "data/gold/auto",
+  "claims": "data/claims/55_full_run.csv",
+  "mode": "verdict",
+  "k": 8,
+  "cache": false
+}

@@ -1,0 +1,7 @@
+{
+  "n_claims": 28,
+  "n_recall_scored": 13,
+  "mean_recall_at_k": 0.8205128205128205,
+  "mean_precision": 0.432051282051282,
+  "verdict_accuracy": 0.7142857142857143
+}

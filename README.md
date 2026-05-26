@@ -38,7 +38,11 @@ finm-33200-group7/
 │   |   ├── corpus.py          # SearchIndex: FAISS query, call-date floor + reportDate horizon ceiling
 │   |   ├── tools.py           # per-claim search_filings tool (ticker/after_date/horizon_end closed over)
 │   |   ├── trace.py           # JSON+Markdown trace writer (adapted from agentic-rag-edgar-demo)
-│   |   ├── agent.py           # build_agent, verify, verify_from_dict
+│   |   ├── agent.py           # build_agent, verify (allow_unsupported), coverage context, evidence net, parser repair
+│   |   ├── label.py           # human gold-set helper: deterministic keyword sweep (agent-independent)
+│   |   ├── autolabel.py       # GPT-5.5 gold-set auto-labeler: select/label CLIs, reuses label.py's sweep
+│   |   ├── gold.py            # GoldLabel / GoldEvidence schema + JSONL loader
+│   |   ├── eval.py            # scorer: recall@k / precision / verdict accuracy; per-run records (git_head)
 │   |   └── run.py             # CLI: python -m verifier.run --claim ... --mode {evidence,verdict}
 │   └── autochecker/           # workstream C iter-3 — Compustat-backed numerical grader
 │       ├── __init__.py        # package docstring
@@ -57,7 +61,10 @@ finm-33200-group7/
 │   └── test_smoke.py          # verifier end-to-end live tests (marked `live`; run with `pytest -m live`)
 ├── data/
 │   ├── Transcript/            # interim transcript CSVs (4 firms; superseded by Pulled_data/ parquet)
-│   ├── claims/                # extractor output — claims CSVs
+│   ├── claims/                # extractor output — claims CSVs (e.g. 55_full_run.csv)
+│   ├── gold/                  # gold labels; gold/auto/ = LLM-labeled subset + pinned subset_ids.txt
+│   ├── eval/                  # eval output: per_claim_results.csv + runs/<ts>_<label>/ run records
+│   ├── verdicts/              # agent verdicts over the autochecker residual (agent_screenfalse_55.jsonl)
 │   ├── stub/                  # canned fixtures (example_claim.json + canned_excerpts.json)
 │   ├── autochecker/           # autochecker run outputs — per-claim JSONL + flat summary CSV
 │   └── traces/                # per-run agent traces (gitignored)
@@ -284,9 +291,13 @@ they're recomputed each time. This is a known iter-3 backlog item — see
 
 ### Scope
 
-Iter-2 verifies **`capital_allocation` claims only**. A `numerical_guidance`
-claim raises `UnsupportedClaimTypeError`; Compustat-backed numeric verification
-lands in iter 3.
+The verifier's *validated* scope is **`capital_allocation` claims only** — a
+`numerical_guidance` claim raises `UnsupportedClaimTypeError` by default
+(Compustat-backed numeric verification is the `autochecker`'s job, below). For
+the cascade's fall-through run we override that gate with
+`verify(..., allow_unsupported=True)` so the agent grades any claim type the
+autochecker screened out; **verdicts on non-cap-alloc claims are UNVALIDATED**
+(the gold set is cap-alloc only) and are tagged `validated=False` in the output.
 
 ### Model selection
 
@@ -395,28 +406,58 @@ gold set. Two questions, both scored from one artifact:
 - **Verdict accuracy** — in `--mode verdict`, does the agent's verdict match the
   labeler's?
 
-Gold labels live in `data/gold/` as one JSONL row per claim
-(`pilot_<ticker>.jsonl`). The schema and how-to-label steps are in
-[`data/gold/README.md`](data/gold/README.md); the verdict criteria and
-partial-credit policy belong in [`docs/labeling_rubric.md`](docs/labeling_rubric.md)
-(stub — a pending team deliverable; read it before labeling once written).
-Labelers assign evidence and verdicts **independently of what the agent
-surfaced** — that independence is what keeps the evaluation non-circular.
+Gold labels live in `data/gold/` as one JSONL row per claim. The schema is in
+[`data/gold/README.md`](data/gold/README.md); the verdict criteria + partial-credit
+policy are in [`docs/labeling_rubric.md`](docs/labeling_rubric.md). The agent
+surfaces evidence **without proposing a verdict**, and the labeler assigns the
+verdict independently — that independence is what keeps recall@k non-circular.
 
-Score a gold file with:
+**Gold-set labeling — auto-labeled (2026-05-25).** Hand-labeling was replaced,
+under time pressure, by an LLM labeler: `python -m verifier.autolabel` runs
+**GPT-5.5 + the rubric** over the *same deterministic keyword sweep* the human
+helper uses (never the agent's FAISS index, and the graded agent never sees the
+rubric — so the recall@k and rubric-independence guarantees hold). This is
+LLM-led, **not** hand-labeled — a flagged shortcoming (see `CLAUDE.md`
+deliverable #3). Two subcommands:
+
+```bash
+# select + freeze the residual subset (no LLM): cap-alloc claims the autochecker
+# screened out, biased to elapsed horizons + a few forward "not-yet-resolvable" controls
+mamba run -n truth python -m verifier.autolabel select \
+    --claims data/claims/55_full_run.csv --out data/gold/auto/subset_ids.txt \
+    --exclude-checked data/autochecker/55_full_run_verdict_autochecker-v1.jsonl \
+    --elapsed-by 2024-12-31 --forward-per-ticker 2
+# label the frozen subset with GPT-5.5 (needs GOLD_LABELER_MODEL in .env)
+mamba run -n truth python -m verifier.autolabel label \
+    --claims data/claims/55_full_run.csv --claim-ids data/gold/auto/subset_ids.txt \
+    --gold-dir data/gold/auto
+```
+
+Score a gold file/dir with:
 
 ```bash
 mamba run -n truth python -m verifier.eval \
-    --gold data/gold/pilot_tsla.jsonl \
-    --claims data/claims/pilot_claims.csv \
-    --mode evidence --k 8
+    --gold data/gold/auto --claims data/claims/55_full_run.csv \
+    --mode verdict --k 8 --no-cache --run-label discipline-pass
 ```
 
-The scorer looks up each gold claim in the claims CSV, runs the agent live (the
-SQLite chat cache keeps re-scoring cheap), prints summary stats, and writes a
-per-claim CSV (default `data/eval/per_claim_results.csv`). Use `--mode verdict`
-to also score verdict accuracy. `--gold` accepts a directory of `*.jsonl` files
-(per-ticker labels are merged).
+The scorer looks up each gold claim in the claims CSV, runs the agent live,
+prints summary stats, and writes a per-claim CSV (`--output`, default
+`data/eval/per_claim_results.csv`). `--gold` accepts a directory of `*.jsonl`
+(merged). **Each run is also saved individually** under
+`data/eval/runs/<timestamp>_<label>/` (`per_claim.csv` + `summary.json` +
+`meta.json` with the `git_head`) — set `--run-label` / `--runs-dir`. This makes
+iterations comparable and a regression revertable to a known commit. Use
+`--no-cache` when a prompt changed so the agent re-runs instead of replaying
+cached completions. See [`docs/autolabel-eval-summary.md`](docs/autolabel-eval-summary.md)
+for the eval narrative (baseline → discipline pass → trace review → citation attempt).
+
+**Cascade / residual verdicts.** In production the autochecker grades what
+Compustat can; the agent grades the rest (`is_compustat_relevant: false`). Agent
+verdicts over that residual (all claim types) are captured in
+`data/verdicts/agent_screenfalse_55.jsonl` — the agent half of the per-firm
+truth-profile inputs (the autochecker half is `data/autochecker/…autochecker-v1.jsonl`).
+Profile assembly that joins the two halves is not yet built.
 
 ## Adding or updating dependencies
 

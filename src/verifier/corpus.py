@@ -84,6 +84,15 @@ class SearchIndex:
         cls._cache[ticker] = inst
         return inst
 
+    @property
+    def max_report_date(self):
+        """Latest filing reporting period available for this ticker — the
+        evidence-coverage ceiling. None if no dated chunks exist."""
+        rd = self._chunks["report_date"].dropna()
+        if rd.empty:
+            return None
+        return rd.max().date()
+
     @lru_cache(maxsize=512)
     def _embed_query_cached(self, text: str) -> tuple[float, ...]:
         """Per-instance LRU around the embedding call.
