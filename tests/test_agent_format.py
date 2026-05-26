@@ -110,3 +110,9 @@ def test_format_claim_omits_coverage_line_when_not_provided():
     c = _claim()
     msg = _format_claim_for_agent(c)               # no coverage args -> backwards compatible
     assert "available through" not in msg.lower()
+
+
+def test_format_claim_allow_unsupported_bypasses_gate():
+    c = _claim(claim_type="numerical_guidance")
+    msg = _format_claim_for_agent(c, allow_unsupported=True)   # must NOT raise
+    assert "numerical_guidance" in msg

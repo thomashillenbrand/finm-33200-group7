@@ -282,6 +282,7 @@ def verify(
     *,
     trace: bool = True,
     cache: bool = True,
+    allow_unsupported: bool = False,
 ) -> EvidenceBundle | Verdict:
     """Run the verification agent on a single claim. Returns mode-dependent output.
 
@@ -315,8 +316,9 @@ def verify(
         fully_covered = _horizon_within_coverage(claim.horizon_end_date, coverage_date)
 
     user_message = _format_claim_for_agent(
-        claim, coverage_date=coverage_date, fully_covered=fully_covered
-    )  # raises UnsupportedClaimTypeError on unsupported types
+        claim, coverage_date=coverage_date, fully_covered=fully_covered,
+        allow_unsupported=allow_unsupported,
+    )  # raises UnsupportedClaimTypeError on unsupported types unless allow_unsupported
     _configure_cache(cache)
     tool = bind_search_filings(claim.ticker, claim.call_date, claim.horizon_end_date)
     agent = build_agent(mode, tools=[tool])
@@ -365,7 +367,8 @@ def _horizon_within_coverage(horizon_end, coverage):
     )
 
 
-def _format_claim_for_agent(claim: Claim, *, coverage_date=None, fully_covered=None) -> str:
+def _format_claim_for_agent(claim: Claim, *, coverage_date=None, fully_covered=None,
+                            allow_unsupported=False) -> str:
     """Render the user message the agent loop sees for `claim`.
 
     Deliberately omits the ticker — that's closed over in the tool binding, and
@@ -377,11 +380,12 @@ def _format_claim_for_agent(claim: Claim, *, coverage_date=None, fully_covered=N
     Raises UnsupportedClaimTypeError on numerical_guidance (Compustat deferred
     to iter 3).
     """
-    if claim.claim_type not in SUPPORTED_CLAIM_TYPES:
+    if not allow_unsupported and claim.claim_type not in SUPPORTED_CLAIM_TYPES:
         raise UnsupportedClaimTypeError(
             f"Iter-2 verifies capital-allocation claims only; "
             f"got claim_type={claim.claim_type!r}. "
-            f"Compustat-backed numerical_guidance lands in iter 3."
+            f"Compustat-backed numerical_guidance lands in iter 3. "
+            f"Pass allow_unsupported=True to override (verdict will be unvalidated)."
         )
 
     coverage_line = ""
