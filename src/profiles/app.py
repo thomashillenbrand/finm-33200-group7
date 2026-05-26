@@ -62,11 +62,11 @@ def get_dashboard_html() -> str:
         "position: relative;",
     )
 
-    # 2. Inject an auto-height script so Streamlit sizes the iframe to fit
-    #    all content — no internal scrollbar, no cut-off sections.
-    resize_js = """
+    # 2. Inject scripts for the Streamlit / iframe context.
+    iframe_js = """
 <script>
 (function () {
+    // ── auto-height: tell Streamlit how tall to make the iframe ────────────
     function postHeight() {
         var h = Math.max(
             document.body.scrollHeight,
@@ -77,17 +77,62 @@ def get_dashboard_html() -> str:
             "*"
         );
     }
-    // fire immediately, after fonts/images load, and on resize
     postHeight();
     window.addEventListener("load",   postHeight);
     window.addEventListener("resize", postHeight);
     setTimeout(postHeight,  400);
     setTimeout(postHeight, 1200);
     setTimeout(postHeight, 2500);
+
+    // ── nav-link fix: scroll the OUTER page, not the inner iframe ──────────
+    // When a user clicks "#overview" etc. inside an iframe with
+    // overflow:hidden, the browser scrolls the iframe's own document —
+    // clipping the top of the page and making it look "smaller".
+    // Instead, we intercept the click, work out where the target element
+    // sits in the outer (Streamlit) page, and scroll that page smoothly.
+    if (window.parent === window) return;   // not inside an iframe — skip
+
+    function attachNavFix() {
+        var links = document.querySelectorAll('a[href^="#"]');
+        links.forEach(function (link) {
+            link.addEventListener("click", function (e) {
+                var href = link.getAttribute("href");
+                if (!href || href.length < 2) return;
+                var target = document.getElementById(href.slice(1));
+                if (!target) return;
+
+                e.preventDefault();
+                e.stopPropagation();
+
+                // Distance from top of the iframe document to the target
+                var targetOffsetInIframe =
+                    target.getBoundingClientRect().top + window.scrollY;
+
+                // Distance from top of the outer (Streamlit) page to
+                // the top edge of this iframe
+                var iframeTopInPage = 0;
+                try {
+                    var rect = window.frameElement.getBoundingClientRect();
+                    iframeTopInPage = rect.top + window.parent.scrollY;
+                } catch (err) { /* cross-origin guard — shouldn't fire on localhost */ }
+
+                window.parent.scrollTo({
+                    top: iframeTopInPage + targetOffsetInIframe,
+                    behavior: "smooth"
+                });
+            });
+        });
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", attachNavFix);
+    } else {
+        attachNavFix();
+    }
 })();
 </script>
 """
-    return html.replace("</body>", resize_js + "\n</body>")
+    return html.replace("</body>", iframe_js + "\n</body>")
 
 
 html_content = get_dashboard_html()
