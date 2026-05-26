@@ -40,7 +40,9 @@ CLAIMS_CSV   = ROOT / "data/claims/55_full_run.csv"
 AUTOCHECK_CSV = ROOT / "data/autochecker/55_full_run_verdict_autochecker-v1.csv"
 AGENT_JSONL  = ROOT / "data/verdicts/agent_screenfalse_55.jsonl"
 COMBINED_CSV = ROOT / "data/verdicts/combined_55_final.csv"
-DASHBOARD_HTML = ROOT / "data/profiles/dashboard.html"
+DASHBOARD_HTML   = ROOT / "data/profiles/dashboard.html"
+PROFILE_SUMMARY  = ROOT / "data/profiles/summary.csv"
+AGENT_JSONL_FULL = ROOT / "data/autochecker/55_full_run_verdict_autochecker-v1.jsonl"
 GOLD_DIR     = ROOT / "data/gold/auto"
 SUBSET_IDS   = ROOT / "data/gold/auto/subset_ids.txt"
 EVAL_RUNS_DIR = ROOT / "data/eval/runs"
@@ -51,7 +53,7 @@ START_DATE = "2018-01-01"
 # ── doit global config ────────────────────────────────────────────────────────
 
 DOIT_CONFIG = {
-    "default_tasks": ["dashboard"],
+    "default_tasks": ["profiles", "dashboard"],
     "verbosity": 2,
 }
 
@@ -271,6 +273,29 @@ def task_combine():
         "file_dep": [str(AUTOCHECK_CSV), str(AGENT_JSONL)],
         "targets":  [str(COMBINED_CSV)],
         "task_dep": ["autocheck", "verify_agent"],
+    }
+
+
+def task_profiles():
+    """Build per-firm profile CSVs and aggregate summary → data/profiles/.
+
+    Merges combined verdicts + claim details + grader reasoning into one CSV
+    per ticker (AMZN_profile.csv, TSLA_profile.csv, KO_profile.csv,
+    LLY_profile.csv) and a cross-firm summary.csv. No LLM calls.
+    Output: data/profiles/<TICKER>_profile.csv + data/profiles/summary.csv
+    """
+    return {
+        "actions": [
+            f"python -m profiles.build_profiles "
+            f"--verdicts        {COMBINED_CSV} "
+            f"--claims          {CLAIMS_CSV} "
+            f"--agent-jsonl     {AGENT_JSONL} "
+            f"--autocheck-jsonl {AGENT_JSONL_FULL} "
+            f"--out-dir         {ROOT / 'data/profiles'}",
+        ],
+        "file_dep": [str(COMBINED_CSV), str(CLAIMS_CSV)],
+        "targets":  [str(PROFILE_SUMMARY)],
+        "task_dep": ["combine"],
     }
 
 

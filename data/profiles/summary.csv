@@ -1,0 +1,5 @@
+ticker,company,total_claims,truth_score,verified,partially_verified,contradicted,not_yet_resolvable,insufficient_data
+AMZN,"Amazon.com, Inc.",116,0.517,46,14,9,47,0
+KO,The Coca-Cola Company,123,0.447,44,11,30,38,0
+LLY,Eli Lilly and Company,151,0.609,66,26,25,34,0
+TSLA,"Tesla, Inc.",61,0.361,18,4,9,30,0

@@ -59,6 +59,7 @@ finm-33200-group7/
 │   │   └── run.py             # CLI: python -m autochecker.run --claims ... --mode {evidence,verdict}
 │   └── profiles/              # workstream D — results visualisation + dashboard
 │       ├── __init__.py
+│       ├── build_profiles.py  # CLI: python -m profiles.build_profiles → per-firm CSVs
 │       ├── dashboard.py       # generates the interactive Plotly HTML dashboard
 │       └── app.py             # Streamlit app: streamlit run src/profiles/app.py
 ├── notebooks/
@@ -77,7 +78,7 @@ finm-33200-group7/
 │   ├── verdicts/              # combined verdicts (combined_55_final.csv) + agent residual JSONL
 │   ├── stub/                  # canned fixtures (example_claim.json + canned_excerpts.json)
 │   ├── autochecker/           # autochecker run outputs — per-claim JSONL + flat summary CSV
-│   ├── profiles/              # pre-generated dashboard HTML
+│   ├── profiles/              # per-firm profile CSVs, summary.csv, dashboard HTML
 │   └── traces/                # per-run agent traces (gitignored)
 ├── pulled_data/               # data_pull output: per-ticker transcripts, Compustat, SEC filings (gitignored)
 └── docs/                      # design docs and other supporting material
@@ -474,11 +475,36 @@ dashboard. Two ways to view results:
 
 | Method | Command | Output |
 |---|---|---|
+| Per-firm profiles | `python -m profiles.build_profiles` | `data/profiles/<TICKER>_profile.csv` + `summary.csv` |
 | Streamlit app | `streamlit run src/profiles/app.py` | Live app on `localhost:8501` |
 | Jupyter notebook | `jupyter notebook notebooks/results.ipynb` | All charts inline with narrative |
 
-Both read from `data/verdicts/combined_55_final.csv` (the merged autochecker +
+All three read from `data/verdicts/combined_55_final.csv` (the merged autochecker +
 agent output) and `data/claims/55_full_run.csv`.
+
+### Per-firm profile CSVs (`python -m profiles.build_profiles`)
+
+The primary structured deliverable — one CSV per firm with every claim, its
+verdict, and the grader's reasoning:
+
+```bash
+python -m profiles.build_profiles   # uses default paths, writes to data/profiles/
+```
+
+Output files:
+
+| File | Contents |
+|---|---|
+| `data/profiles/AMZN_profile.csv` | 116 claims — Amazon |
+| `data/profiles/KO_profile.csv` | 123 claims — Coca-Cola |
+| `data/profiles/LLY_profile.csv` | 151 claims — Eli Lilly |
+| `data/profiles/TSLA_profile.csv` | 61 claims — Tesla |
+| `data/profiles/summary.csv` | Aggregate truth scores across all four firms |
+
+Each profile CSV has columns: `claim_id`, `company`, `ticker`, `call_date`,
+`fiscal_period`, `claim_type`, `speaker_name`, `verbatim_quote`, `summary`,
+`horizon_raw`, `horizon_end_date`, `verdict`, `grader` (autochecker or agent),
+`reasoning` (grader's explanation).
 
 ### Streamlit app (`src/profiles/app.py`)
 
