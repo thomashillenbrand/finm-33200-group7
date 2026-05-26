@@ -59,8 +59,7 @@ finm-33200-group7/
 │   │   └── run.py             # CLI: python -m autochecker.run --claims ... --mode {evidence,verdict}
 │   └── profiles/              # workstream D — results visualisation + dashboard
 │       ├── __init__.py
-│       ├── visualize.py       # CLI: python -m profiles.visualize → 7 static charts
-│       ├── dashboard.py       # generates data/profiles/dashboard.html (interactive Plotly)
+│       ├── dashboard.py       # generates the interactive Plotly HTML dashboard
 │       └── app.py             # Streamlit app: streamlit run src/profiles/app.py
 ├── notebooks/
 │   └── results.ipynb          # end-to-end results walkthrough with all charts inline
@@ -78,7 +77,7 @@ finm-33200-group7/
 │   ├── verdicts/              # combined verdicts (combined_55_final.csv) + agent residual JSONL
 │   ├── stub/                  # canned fixtures (example_claim.json + canned_excerpts.json)
 │   ├── autochecker/           # autochecker run outputs — per-claim JSONL + flat summary CSV
-│   ├── profiles/              # dashboard HTML + 7 static per-section charts (PNG)
+│   ├── profiles/              # pre-generated dashboard HTML
 │   └── traces/                # per-run agent traces (gitignored)
 ├── pulled_data/               # data_pull output: per-ticker transcripts, Compustat, SEC filings (gitignored)
 └── docs/                      # design docs and other supporting material
@@ -470,47 +469,16 @@ verdicts over that residual (all claim types) are captured in
 
 ## Results & Visualization (workstream D)
 
-The `profiles` package assembles the combined verdict CSV into charts and a
-self-contained interactive dashboard. Three ways to view results:
+The `profiles` package assembles the combined verdict CSV into an interactive
+dashboard. Two ways to view results:
 
 | Method | Command | Output |
 |---|---|---|
-| Static charts | `python -m profiles.visualize` | 7 PNG files in `data/profiles/` |
-| HTML dashboard | `python -m profiles.dashboard` | `data/profiles/dashboard.html` (open in any browser) |
 | Streamlit app | `streamlit run src/profiles/app.py` | Live app on `localhost:8501` |
 | Jupyter notebook | `jupyter notebook notebooks/results.ipynb` | All charts inline with narrative |
 
-The dashboard and notebook both read from `data/verdicts/combined_55_final.csv`
-(the merged autochecker + agent output) and `data/claims/55_full_run.csv`.
-
-### Static charts (`python -m profiles.visualize`)
-
-Writes 7 PNGs to `data/profiles/`:
-
-| File | Chart |
-|---|---|
-| `01_overview_donuts.png` | Verdict distribution across all claims (donut) |
-| `02_company_verdict_bars.png` | Per-company verdict breakdown (stacked bar) |
-| `03_claim_type_breakdown.png` | Claim-type split by company |
-| `04_truth_score_over_time.png` | Rolling truth score by call date |
-| `05_heatmap_company_year.png` | Company × year truth-score heatmap |
-| `06_overall_verdict_counts.png` | Raw verdict counts |
-| `07_score_comparison.png` | Autochecker vs. agent score comparison |
-
-### Interactive dashboard (`data/profiles/dashboard.html`)
-
-A single self-contained HTML file (Plotly.js embedded). No server needed — open
-it directly in a browser. All charts are interactive (hover, zoom, filter by
-verdict or company). Sections: Overview, Companies, Trends, Agent Eval. Run the
-generator to rebuild after any data change:
-
-```bash
-python -m profiles.dashboard \
-    --verdicts data/verdicts/combined_55_final.csv \
-    --claims   data/claims/55_full_run.csv \
-    --runs-dir data/eval/runs \
-    --out      data/profiles/dashboard.html
-```
+Both read from `data/verdicts/combined_55_final.csv` (the merged autochecker +
+agent output) and `data/claims/55_full_run.csv`.
 
 ### Streamlit app (`src/profiles/app.py`)
 
