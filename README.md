@@ -1,324 +1,233 @@
-# finm-33200-group7
+# End-to-End Pipeline — How to Run Everything
 
-Group 7 final project for FINM 33200 — *Generative and Agentic AI for Finance* (Spring 2026).
+This document describes how to reproduce the full results from scratch.
+Each step is independent and idempotent — re-running a step that already
+has output on disk is safe (it will skip or overwrite in place).
 
-We are building an agentic system that produces auditable historical *truthfulness profiles* for public companies. The system extracts forward-looking management claims from earnings call transcripts and grades whether each claim was realized by checking the same company's subsequent SEC filings.
-
-See [`CLAUDE.md`](CLAUDE.md) for full project context, [`workplan.md`](workplan.md) for the day-by-day execution plan, and [`proposal_for_submission.md`](proposal_for_submission.md) for the formal scope.
-
-For an end-to-end dataflow walkthrough with diagrams (workstreams A–D,
-schemas, module-by-module tour), see [`docs/architecture.md`](docs/architecture.md).
-
-**To reproduce the full pipeline from scratch**, see [`docs/pipeline.md`](docs/pipeline.md) — nine steps with exact CLI commands, from data pull to final evaluation.
-
-**To view results**, open [`data/profiles/dashboard.html`](data/profiles/dashboard.html) in a browser, or run `streamlit run src/profiles/app.py`, or open [`notebooks/results.ipynb`](notebooks/results.ipynb).
-
-New to git, or want a quick reference for our branch-and-PR workflow? See [`GIT_CHEATSHEET.md`](GIT_CHEATSHEET.md).
-
-## Project structure
+All commands assume you are in the repo root and using the `truth` conda env:
 
 ```
-finm-33200-group7/
-├── pyproject.toml             # PEP 621 metadata + project dependencies
-├── requirements.txt           # pip-compile output, locked
-├── environment.yml            # mamba env spec (python=3.12, pip-tools)
-├── .env.example               # template for API keys and other settings
-├── src/
-│   ├── data_pull.py           # workstream A — single-file CLI: WRDS transcripts + Compustat quarterly + SEC EDGAR filings, per ticker
-│   ├── extractor/             # workstream B — claim extraction pipeline
-│   │   ├── __init__.py        # re-exports the public API
-│   │   ├── schema.py          # Pydantic models: Claim, ExtractedClaim, ExtractionResponse
-│   │   ├── reader.py          # loads transcript parquet, groups turns into earnings calls
-│   │   ├── horizon.py         # resolves claim time horizons to absolute dates
-│   │   ├── prompt.py          # extraction system prompt + few-shot examples
-│   │   ├── provenance.py      # matches an extracted quote back to its source turn
-│   │   ├── extract.py         # build_extractor, extract_call, filter_unquantified_guidance, filter_unresolved_horizon, dedupe_claims
-│   │   ├── output.py          # writes the claims CSV
-│   │   └── run.py             # CLI: python -m extractor.run --input ... --output ...
-│   ├── verifier/              # workstream C — verification agent (real EDGAR retrieval + FAISS)
-│   |   ├── __init__.py        # re-exports the public API
-│   |   ├── schema.py          # Pydantic models: Claim, EvidenceItem, EvidenceBundle, Verdict
-│   |   ├── index.py           # offline indexer: chunk + embed SEC HTML → chunks.parquet (+ report_date) + faiss.index
-│   |   ├── corpus.py          # SearchIndex: FAISS query, call-date floor + reportDate horizon ceiling
-│   |   ├── tools.py           # per-claim search_filings tool (ticker/after_date/horizon_end closed over)
-│   |   ├── trace.py           # JSON+Markdown trace writer (adapted from agentic-rag-edgar-demo)
-│   |   ├── agent.py           # build_agent, verify (allow_unsupported), coverage context, evidence net, parser repair
-│   |   ├── label.py           # human gold-set helper: deterministic keyword sweep (agent-independent)
-│   |   ├── autolabel.py       # GPT-5.5 gold-set auto-labeler: select/label CLIs, reuses label.py's sweep
-│   |   ├── gold.py            # GoldLabel / GoldEvidence schema + JSONL loader
-│   |   ├── eval.py            # scorer: recall@k / precision / verdict accuracy; per-run records (git_head)
-│   |   └── run.py             # CLI: python -m verifier.run --claim ... --mode {evidence,verdict}
-│   ├── autochecker/           # workstream C iter-3 — Compustat-backed numerical grader
-│   │   ├── __init__.py        # package docstring
-│   │   ├── schema.py          # Pydantic: ScreenResult, EvidenceResult, VerdictResult, AutocheckRecord
-│   │   ├── compustat.py       # parquet loader, YTD→quarterly delta, pre/post-call slicing, field codebook
-│   │   ├── prompts.py         # versioned stage-1 + stage-2 prompts (evidence/verdict variants)
-│   │   ├── llm.py             # raw OpenAI SDK structured-output wrapper + rate-limit retry
-│   │   ├── screen.py          # stage 1: Compustat-relevance screen
-│   │   ├── verify.py          # stage 2: verification, citation scrubbing
-│   │   └── run.py             # CLI: python -m autochecker.run --claims ... --mode {evidence,verdict}
-│   └── profiles/              # workstream D — results visualisation + dashboard
-│       ├── __init__.py
-│       ├── build_profiles.py  # CLI: python -m profiles.build_profiles → per-firm CSVs
-│       ├── dashboard.py       # generates the interactive Plotly HTML dashboard
-│       └── app.py             # Streamlit app: streamlit run src/profiles/app.py
-├── notebooks/
-│   └── results.ipynb          # end-to-end results walkthrough with all charts inline
-├── tests/
-│   ├── test_extractor_*.py    # extractor tests: schema, reader, horizon, provenance, filter, dedupe, context, output, smoke
-│   ├── test_schema.py         # verifier Pydantic schema tests
-│   ├── test_corpus.py         # verifier stub corpus loader test
-│   ├── test_tools.py          # verifier search_filings stub test
-│   └── test_smoke.py          # verifier end-to-end live tests (marked `live`; run with `pytest -m live`)
-├── data/
-│   ├── Transcript/            # interim transcript CSVs (4 firms; superseded by Pulled_data/ parquet)
-│   ├── claims/                # extractor output — claims CSVs (e.g. 55_full_run.csv)
-│   ├── gold/                  # gold labels; gold/auto/ = LLM-labeled subset + pinned subset_ids.txt
-│   ├── eval/                  # eval output: per_claim_results.csv + runs/<ts>_<label>/ run records
-│   ├── verdicts/              # combined verdicts (combined_55_final.csv) + agent residual JSONL
-│   ├── stub/                  # canned fixtures (example_claim.json + canned_excerpts.json)
-│   ├── autochecker/           # autochecker run outputs — per-claim JSONL + flat summary CSV
-│   ├── profiles/              # per-firm profile CSVs, summary.csv, dashboard HTML
-│   └── traces/                # per-run agent traces (gitignored)
-├── pulled_data/               # data_pull output: per-ticker transcripts, Compustat, SEC filings (gitignored)
-└── docs/                      # design docs and other supporting material
+cd finm-33200-group7
 ```
 
-## Setup
+---
 
-Prerequisites: [mamba](https://mamba.readthedocs.io/) (or conda), an OpenAI API key, and a WRDS account.
+## Prerequisites
 
-```bash
-# 1. Create the environment (default name: truth — pass -n <other> to override)
-mamba env create -f environment.yml
-mamba activate truth
+1. Copy `.env.example` to `.env` and fill in your keys:
 
-# 2. Install locked Python dependencies
-pip install -r requirements.txt              # locked runtime install
-
-# 3. Editable install of the project's source packages
-pip install -e ".[dev]"                      # editable install + dev tools (pytest, pip-tools)
-
-# 4. Configure secrets
-cp .env.example .env
-#    then edit .env and set:
-#      OPENAI_API_KEY — required for the extractor and verifier
-#      WRDS_USERNAME  — required for `python -m data_pull` (workstream A)
+```
+OPENAI_API_KEY=sk-...
+WRDS_USERNAME=your_wrds_username
+SEC_USER_AGENT="Your Name your@email.com"
+EXTRACTOR_MODEL=openai:gpt-4o-mini
+VERIFIER_AGENT_MODEL=openai:gpt-4o-mini
+VERIFIER_PARSER_MODEL=openai:gpt-4o-mini
+EMBEDDING_MODEL=text-embedding-3-small
 ```
 
-### Quick smoke test
+2. Install dependencies:
 
-Once setup is complete, confirm everything is wired up:
+```
+pip install -r requirements.txt
+```
 
-````bash
-# Fast unit tests (no API calls)
-pytest -v
+---
 
-# End-to-end smoke tests (require OPENAI_API_KEY in .env; live OpenAI calls)
-pytest -m live -v
+## Step 1 — Pull data (Workstream A)
 
-# Run the verification agent on the stub claim
-python -m verifier.run --claim data/stub/example_claim.json --mode evidence
-python -m verifier.run --claim data/stub/example_claim.json --mode verdict
-````
+Downloads WRDS transcripts, SEC filings (10-K/10-Q/8-K), and Compustat
+fundamentals for each ticker into `Pulled_data/<TICKER>/`.
 
-If `pytest -v` is all green and `python -m verifier.run` produces an
-`EvidenceBundle` JSON dump, the scaffold is healthy. Traces from each run
-land in `data/traces/` (gitignored).
-
-## Data pulls (workstream A)
-
-`src/data_pull.py` is a single-file CLI that, for one ticker, downloads
-everything we need from external sources into a per-ticker tree under
-`pulled_data/`:
-
-- earnings-call transcript metadata + full text from WRDS Capital IQ
-  (`ciq_transcripts.*`) → parquet
-- Compustat quarterly fundamentals (`comp.fundq`, 80-ish fields covering
-  balance sheet / income statement / cash flow / market) → parquet
-- SEC EDGAR primary documents for 10-K, 10-Q, 8-K, plus a parquet index
-  of all filings → HTML files + parquet
-
-Run it once per ticker:
-
-```bash
+```
 python -m data_pull AMZN --start 2018-01-01
 python -m data_pull TSLA --start 2018-01-01
 python -m data_pull KO   --start 2018-01-01
 python -m data_pull LLY  --start 2018-01-01
 ```
 
-Each invocation is idempotent — files that already exist are skipped, so
-re-running only fetches new filings. The CLI loads `WRDS_USERNAME` from
-the project-root `.env`; SEC requests use a `User-Agent` from
-`SEC_USER_AGENT` (override in `.env` if you want your email on it).
-
-Output layout for ticker `XXX`:
-
+Output layout:
 ```
-pulled_data/XXX/
-├── transcript/   # XXX_metadata.parquet + XXX_transcripts.parquet
-├── Compustat/    # XXX_compustat_quarterly.parquet
-└── SEC/
-    ├── 10-K/...  # primary documents (HTML)
-    ├── 10-Q/...
-    ├── 8-K/...
-    └── XXX_sec_filings_index.parquet
+Pulled_data/<TICKER>/
+  transcript/   WRDS transcript parquet
+  SEC/          10-K, 10-Q, 8-K HTML files + filings index parquet
+  Compustat/    quarterly fundamentals parquet
 ```
 
-`pulled_data/` is gitignored — every collaborator pulls their own copy.
+---
 
-Caveat: cash-flow columns in `comp.fundq` (`capxy`, `dvy`, `dltisy`,
-`dltry`, `prstkcy`, etc.) are reported year-to-date. Take first
-differences within each fiscal year to recover per-quarter values.
+## Step 2 — Extract claims (Workstream B)
 
-## Claim extraction (workstream B)
+Reads the transcript parquets and produces a CSV of typed forward-looking
+claims. Uses GPT-5.5 by default (set `EXTRACTOR_MODEL` in `.env`).
 
-The `extractor` package turns the WRDS transcript parquet written by
-`data_pull.py` into a CSV of typed, forward-looking management claims for
-workstreams C and D to consume. Capital IQ stores each call as several
-transcript versions, so the reader first keeps only the final, proofed copy of
-each call. For every earnings call it then makes one OpenAI structured-output
-request, recovers each claim's source turn by matching the quote back to the
-transcript, resolves claim time horizons to absolute dates (absolute and
-relative phrasings, plus bare quarters like `Q2` and bare months like `by the
-end of March`), drops numerical-guidance claims that state no specific figure,
-prunes any claim whose horizon could not be resolved to an end date, and
-removes exact-duplicate claims.
+```
+python -m extractor.run \
+    --input Pulled_data/ \
+    --output data/claims/55_full_run.csv
+```
 
-Every claim is classified as either `numerical_guidance` (graded against
-Compustat) or `capital_allocation` (share buybacks, dividends, capex, and debt
-actions — graded against SEC filings), and carries its verbatim quote, a
-paraphrase, provenance (source turn + speaker), a resolved horizon, and a
-`source_context` field (the source turn plus the turn immediately before it,
-so a sparse quote can be read in context). By design the schema
-holds no verdict or outcome field: the extractor surfaces claims, the verifier
-surfaces evidence, and human labelers assign verdicts.
+To run on a single ticker or limit the number of calls (for testing):
 
-Run it with the CLI:
-
-```bash
-# 5-call pilot on one firm
+```
 python -m extractor.run \
     --input Pulled_data/TSLA/transcript/TSLA_transcripts.parquet \
-    --output data/claims/pilot_claims.csv --limit 5
-
-# full run over every transcript parquet under a directory
-python -m extractor.run --input Pulled_data --output data/claims/all_claims.csv
-
-# override the model (default: openai:gpt-4o-mini)
-python -m extractor.run --input ... --output ... --model openai:gpt-5.5
+    --output data/claims/tsla_test.csv \
+    --limit 5
 ```
 
-The CLI loads `OPENAI_API_KEY` from `.env` automatically. Each run prints a
-per-call claim count and a summary (type breakdown, provenance split, horizon
-resolution) and writes one row per claim to the output CSV in `data/claims/`.
+The output CSV contains one row per claim with: `claim_id`, `ticker`,
+`company`, `call_date`, `claim_type`, `verbatim_quote`, `summary`,
+`horizon_raw`, `horizon_period`, `horizon_end_date`, `speaker_name`.
 
-## Verification — iter-2 real EDGAR retrieval (workstream C)
+---
 
-Iter-1 ran the agent against canned excerpts. Iter-2 runs it against the four
-firms' actual SEC filings via a local FAISS index, with the load-bearing
-labeling guarantee preserved: in `--mode evidence` the agent returns cited
-excerpts without proposing a verdict.
+## Step 3 — Build the FAISS search index (Workstream C)
 
-> **iter-3 update (2026-05-24) — claim-horizon time window.** The agent's
-> filing search is now bounded at *both* ends, enforced at the tool layer (the
-> LLM has no date argument to set): floored at the call date (never a filing
-> from before the claim) and ceilinged at the claim's resolved horizon. The
-> ceiling is keyed on each filing's **reporting period** (`reportDate`), not its
-> filing date — so a late-filed annual 10-K (filed in February but covering the
-> prior Dec 31) is still graded against an annual claim. This replaces the old
-> LLM-visible `before_date` argument and adds a `report_date` column to
-> `chunks.parquet`; **indexes built before this change must be rebuilt** (see
-> below). A claim with no resolved horizon (`horizon_end_date` null) would have
-> no ceiling — but as of 2026-05-24 the extractor prunes such claims upstream
-> (`filter_unresolved_horizon`), so the verifier no longer receives one.
+Chunks and embeds all SEC filings for fast retrieval by the verifier agent.
+Only needs to run once per ticker (or after new filings are pulled).
 
-### Prerequisites
-
-Pull SEC filings + Compustat for the four firms (one-time, ~10–30 min total):
-
-```bash
-mamba run -n truth python -m data_pull TSLA --start 2018-01-01
-mamba run -n truth python -m data_pull AMZN --start 2018-01-01
-mamba run -n truth python -m data_pull KO   --start 2018-01-01
-mamba run -n truth python -m data_pull LLY  --start 2018-01-01
+```
+python -m verifier.index --all
 ```
 
-Output lives under `pulled_data/<TICKER>/` (gitignored).
+To rebuild a single ticker from scratch:
 
-### Build the search indexes
-
-```bash
-mamba run -n truth python -m verifier.index --all          # all four tickers
-mamba run -n truth python -m verifier.index TSLA           # one ticker
-mamba run -n truth python -m verifier.index TSLA --refresh # full rebuild
+```
+python -m verifier.index TSLA --refresh
 ```
 
-Output: `pulled_data/<TICKER>/index/chunks.parquet` and `faiss.index`.
-Idempotent — re-running on an unchanged corpus is a no-op (only new accession
-numbers get re-embedded).
+Output: `Pulled_data/<TICKER>/index/chunks.parquet` and `faiss.index`.
 
-`chunks.parquet` carries a `report_date` column (the filing's reporting period,
-used for the horizon ceiling). Re-running the indexer **backfills it onto an
-existing index for free** — no re-embedding, since chunk IDs are
-date-independent. If `SearchIndex.load` raises `IndexCorruptError` about a
-missing `report_date` column, your index predates the horizon change; just
-re-run `python -m verifier.index --all`.
+---
 
-### Run the verifier
+## Step 4 — Run the Compustat autochecker (Workstream C)
 
-```bash
-mamba run -n truth python -m verifier.run --claim path/to/claim.json --mode evidence
-mamba run -n truth python -m verifier.run --claim path/to/claim.json --mode verdict
-mamba run -n truth python -m verifier.run --claim path/to/claim.json --mode evidence --no-cache
+Grades numerical guidance claims against Compustat quarterly data.
+Runs in two stages: (1) screens whether the claim maps to a Compustat
+field, (2) compares against the actual realized figures.
+
+```
+python -m autochecker.run \
+    --claims data/claims/55_full_run.csv \
+    --mode verdict \
+    --output data/autochecker/55_full_run_verdict_autochecker-v1.csv
 ```
 
-Each run also writes a structured trace (`.json` + human-readable `.md`) under
-`data/traces/`.
+Claims the autochecker cannot resolve (non-Compustat, or no data available)
+are left with an empty verdict and passed to the agent in Step 5.
 
-### Caching
+---
 
-Two layers:
+## Step 5 — Run the verifier agent (Workstream C)
 
-- **Document embeddings** — persisted in `pulled_data/<TICKER>/index/faiss.index`
-  and `chunks.parquet`. Incremental: re-running the indexer only embeds
-  accession numbers absent from the existing index.
-- **Chat completions** — SQLite-cached at `pulled_data/.cache/llm_cache.sqlite`
-  via `langchain_community.cache.SQLiteCache`. **On by default.** Pass
-  `--no-cache` on the CLI to bypass for a single run.
+Grades capital-allocation claims (and any numerical claims not resolved by
+the autochecker) using agentic SEC-filings retrieval.
 
-> **Troubleshooting — stale-cache crash.** Cache entries are keyed on the
-> prompt + model, not on the structured-output schema. If you edit the
-> `EvidenceBundle`/`Verdict` schema (or the parser prompt) and then re-run a
-> claim you've run before, a cache *hit* can fail to deserialize with
-> `ValueError: ... does not have a 'parsed' field`. Fix: re-run with
-> `--no-cache`, or delete `pulled_data/.cache/llm_cache.sqlite` to start fresh.
+Run against all claims not resolved by the autochecker:
 
-Query embeddings (one per `search_filings` call) are not separately cached;
-they're recomputed each time. This is a known iter-3 backlog item — see
-`docs/future_optimizations.md`.
+```
+python -m verifier.run \
+    --claims data/claims/55_full_run.csv \
+    --autochecker-results data/autochecker/55_full_run_verdict_autochecker-v1.csv \
+    --mode verdict \
+    --output data/verdicts/agent_screenfalse_55.jsonl
+```
 
-### Scope
+To run a single claim for inspection:
 
-The verifier's *validated* scope is **`capital_allocation` claims only** — a
-`numerical_guidance` claim raises `UnsupportedClaimTypeError` by default
-(Compustat-backed numeric verification is the `autochecker`'s job, below). For
-the cascade's fall-through run we override that gate with
-`verify(..., allow_unsupported=True)` so the agent grades any claim type the
-autochecker screened out; **verdicts on non-cap-alloc claims are UNVALIDATED**
-(the gold set is cap-alloc only) and are tagged `validated=False` in the output.
+```
+python -m verifier.run \
+    --claim data/stub/smoke_0.json \
+    --mode evidence
+```
 
-### Model selection
+---
 
-Every model identifier is supplied by a per-task env var — there is **no
-hardcoded fallback in the source**, so the var must be set (the resolver raises
-a `RuntimeError` naming the missing var otherwise). `cp .env.example .env` ships
-working values; change any one to A/B a different model for that stage. They are
-read at use time, so a change takes effect on the next run.
+## Step 6 — Combine verdicts
 
-| Env var | Stage |
+Merge the autochecker and agent outputs into one final verdicts file.
+The autochecker takes priority; the agent fills in what is left.
+
+```python
+import pandas as pd, json
+
+ac = pd.read_csv('data/autochecker/55_full_run_verdict_autochecker-v1.csv')
+ac_resolved = ac[ac['verdict'].isin(
+    ['verified','partially_verified','contradicted','not_yet_resolvable']
+)]
+ac_resolved['source'] = 'autochecker'
+
+with open('data/verdicts/agent_screenfalse_55.jsonl') as f:
+    agent_rows = [json.loads(l) for l in f if l.strip()]
+agent = pd.DataFrame(agent_rows)[['claim_id','ticker','verdict']]
+agent['source'] = 'agent'
+
+combined = pd.concat([
+    ac_resolved[['claim_id','ticker','call_date','claim_type','verdict','source']],
+    agent,
+], ignore_index=True).drop_duplicates(subset='claim_id', keep='first')
+
+combined.to_csv('data/verdicts/combined_55_final.csv', index=False)
+```
+
+Or run `python src/profiles/combine_verdicts.py` once that script exists.
+
+---
+
+## Step 7 — Generate visualizations
+
+Produces 7 charts in `data/profiles/`:
+
+```
+python -m profiles.visualize \
+    --verdicts data/verdicts/combined_55_final.csv \
+    --claims   data/claims/55_full_run.csv \
+    --out      data/profiles/
+```
+
+Charts produced:
+- `01_overview_donuts.png` — truth score per company
+- `02_company_verdict_bars.png` — stacked verdict breakdown
+- `03_claim_type_breakdown.png` — numerical vs capital allocation
+- `04_truth_score_over_time.png` — year-by-year trend
+- `05_heatmap_company_year.png` — company x year grid
+- `06_overall_verdict_counts.png` — total verdict distribution
+- `07_score_comparison.png` — ranked comparison with confidence intervals
+
+---
+
+## Step 8 — View results notebook
+
+Open the results notebook for an interactive walkthrough of all findings:
+
+```
+jupyter notebook notebooks/results.ipynb
+```
+
+---
+
+## Step 9 — Run the evaluation (optional)
+
+Score the agent against the auto-labeled gold set:
+
+```
+python -m verifier.eval \
+    --gold data/gold/auto/ \
+    --claims data/claims/55_full_run.csv \
+    --mode verdict \
+    --k 8
+```
+
+Results are written to `data/eval/runs/<timestamp>/`.
+
+---
+
+## Summary of outputs
+
+| Path | What it is |
 |---|---|
+<<<<<<< Updated upstream
 | `EXTRACTOR_MODEL` | Claim extraction (`extractor`) |
 | `VERIFIER_AGENT_MODEL` | Tool-using verifier agent |
 | `VERIFIER_PARSER_MODEL` | Verdict-mode structured-output parser |
@@ -525,3 +434,13 @@ pip install -r requirements.txt                  # apply
 ```
 
 Commit both `pyproject.toml` and `requirements.txt` together.
+=======
+| `data/claims/55_full_run.csv` | 539 extracted claims (GPT-5.5, prompt v5) |
+| `data/autochecker/55_full_run_verdict_autochecker-v1.csv` | Compustat verdicts |
+| `data/verdicts/agent_screenfalse_55.jsonl` | Agent verdicts for remaining claims |
+| `data/verdicts/combined_55_final.csv` | Final merged verdicts (451 claims) |
+| `data/profiles/` | 7 visualization charts |
+| `data/gold/auto/` | Auto-labeled gold set (28 claims, GPT-5.5 + rubric) |
+| `data/eval/runs/` | Evaluation run records (recall, precision, verdict accuracy) |
+| `notebooks/results.ipynb` | Full results notebook |
+>>>>>>> Stashed changes
